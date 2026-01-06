@@ -10,9 +10,6 @@ import sqlite3
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-# --------------------
-# Load stock data CSV
-# --------------------
 def load_stock_csv(ticker, data_dir=None):
     """
     Load stock CSV into a DataFrame, auto-locating 'data/raw' if not specified.

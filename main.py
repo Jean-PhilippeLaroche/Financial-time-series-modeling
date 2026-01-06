@@ -6,7 +6,7 @@ from utils.data_utils import (
     prepare_data_for_ai,
     load_stock_csv,
     add_indicators,
-    clean_data
+    clean_data, load_stock_sqlite
 )
 from scripts.train import train_model, get_tensorboard_writer, launch_tensorboard
 from scripts.evaluate import visualize_model_performance
@@ -55,6 +55,8 @@ def main(
     logging.info(f"Transformer config: d_model={d_model}, nhead={nhead}, num_layers={num_layers}")
     if model_interpret:
         logging.info("Model will be interpreted automatically after backtesting")
+    if use_adaptive_clipping:
+        logging.info("Using adaptive clipping")
 
     # ---- Launch TensorBoard automatically ----
     tb_process = launch_tensorboard(logdir="runs", port=6006)
@@ -72,7 +74,13 @@ def main(
     # ============================================================
     t0 = time.time()
     logging.info("Step 1: Loading and preparing full dataframe")
-    df_raw = load_stock_csv(ticker)
+
+    # Using SQLite database if ticker is AAPL or MSFT
+    if ticker in ("AAPL", "MSFT"):
+        df_raw = load_stock_sqlite(ticker)
+    else:
+        df_raw = load_stock_csv(ticker)
+
     if df_raw is None:
         logging.error("Could not load raw CSV for ticker; exiting.")
         return
@@ -85,10 +93,10 @@ def main(
     logging.info(f"Total cleaned rows: {n_total}, train/val split index: {split_idx}")
 
     # Step 1 timer
-    print(f"\033[91mStep 1: {time.time() - t0}\033[0m")
+    logging.info(f"\033[91mStep 1: {time.time() - t0}\n\033[0m")
 
     # ============================================================
-    # STEP 2: Prepare TRAIN and VAL sequences using prepare_data_for_ai
+    # STEP 2-3: Prepare TRAIN and VAL sequences using prepare_data_for_ai
     #         Train: [0 : split_idx]
     #         Val:   [split_idx : n_total]
     # ============================================================
@@ -116,7 +124,7 @@ def main(
     logging.info(f"Training sequences: X_train={X_train.shape}, y_train={y_train.shape}")
 
     # Step 2 timer
-    print(f"\033[91mStep 2: {time.time() - t0}\033[0m")
+    logging.info(f"\033[91mStep 2: {time.time() - t0}\n\033[0m")
 
     t0 = time.time()
     logging.info("Step 3: Preparing validation sequences")
@@ -138,16 +146,15 @@ def main(
     logging.info(f"Validation sequences: X_val={X_val.shape}, y_val={y_val.shape}")
 
     # Step 3 timer
-    print(f"\033[91mStep 3: {time.time() - t0}\033[0m")
+    logging.info(f"\033[91mStep 3: {time.time() - t0}\n\033[0m")
 
     # ============================================================
     # STEP 4: Start TensorBoard writer and train
     # ============================================================
     t0 = time.time()
-    logging.info("Step 4: Starting TensorBoard logging...")
     writer = get_tensorboard_writer()
 
-    logging.info(f"Step 5: Training Transformer model for {epochs} epochs...")
+    logging.info(f"Step 4: Training Transformer model for {epochs} epochs")
     model = train_model(
         X_train, y_train, X_val, y_val,
         input_size=X_train.shape[2],
@@ -178,16 +185,16 @@ def main(
     except Exception as e:
         logging.warning(f"Failed to close TensorBoard writer: {e}")
 
-    # Step 4-5 timer
-    print(f"\033[91mStep 5: {time.time() - t0}\033[0m")
+    # Step 4 timer
+    logging.info(f"\033[91mStep 4: {time.time() - t0}\n\033[0m")
 
     # ============================================================
-    # STEP 6: Backtest run on validation period
+    # STEP 5: Backtest run on validation period
     #         Backtest DF = df_clean (recomputed to avoid leakages)
     #         Period = [split_idx : n_total]
     # ============================================================
     t0 = time.time()
-    logging.info("Step 6: Running backtest on validation slice of df_clean...")
+    logging.info("Step 5: Running backtest on validation slice of the cleaned dataframe")
 
     df_clean = add_indicators(df_raw)
     df_clean = clean_data(df_clean)
@@ -213,14 +220,14 @@ def main(
         end_idx=val_end_idx
     )
 
-    # Step 6 timer
-    print(f"\033[91mStep 6: {time.time() - t0}\033[0m")
+    # Step 5 timer
+    logging.info(f"\033[91mStep 5: {time.time() - t0}\n\033[0m")
 
     # ============================================================
-    # STEP 7: Prepare visualization data
+    # STEP 6: Prepare visualization data
     # ============================================================
     t0 = time.time()
-    logging.info("Step 7: Preparing visualization data...")
+    logging.info("Step 6: Preparing visualization data")
     portfolio_history = backtest_results['portfolio_history']
 
     val_dates = portfolio_history['date'].values
@@ -237,14 +244,14 @@ def main(
         if ind in df_clean.columns:
             indicators[ind] = df_clean[ind].iloc[val_start_idx:val_end_idx].values
 
-    # Step 7 timer
-    print(f"\033[91mStep 7: {time.time() - t0}\033[0m")
+    # Step 6 timer
+    logging.info(f"\033[91mStep 6: {time.time() - t0}\n\033[0m")
 
     # ============================================================
-    # STEP 8: Save backtest results
+    # STEP 7: Save backtest results
     # ============================================================
     t0 = time.time()
-    logging.info("Step 8: Saving backtest results...")
+    logging.info("Step 7: Saving backtest results")
     results_summary = {
         'ticker': ticker,
         'window_size': window_size,
@@ -275,15 +282,15 @@ def main(
         backtest_results['trades'].to_csv(trades_file, index=False)
         logging.info(f"Trade history saved to {trades_file}")
 
-    # Step 8 timer
-    print(f"\033[91mStep 8: {time.time() - t0}\033[0m")
+    # Step 7 timer
+    logging.info(f"\033[91mStep 7: {time.time() - t0}\n\033[0m")
 
     # ============================================================
-    # STEP 9: Visualization
+    # STEP 8: Visualization
     # ============================================================
     t0 = time.time()
     if visualize:
-        logging.info("Step 9: Generating visualizations...")
+        logging.info("Step 8: Generating visualizations")
         try:
             visualize_model_performance(
                 dates=val_dates,
@@ -297,11 +304,11 @@ def main(
             logging.error(f"Visualization failed: {e}")
             logging.exception("Full traceback:")
 
-    # Step 9 timer
-    print(f"\033[91mStep 9: {time.time() - t0}\033[0m")
+    # Step 8 timer
+    logging.info(f"\033[91mStep 8: {time.time() - t0}\n\033[0m")
 
     # ============================================================
-    # STEP 10: Summary + model interpretation
+    # STEP 9: Summary + model interpretation if selected
     # ============================================================
     if model_interpret:
         main_interpretation(ticker, train_size, window_size,
@@ -331,7 +338,7 @@ def main(
     logging.info(f"Transaction Cost:       {transaction_cost * 100}%")
     logging.info("=" * 70 + "\n")
 
-    logging.info("Pipeline finished successfully")
+    logging.info("Pipeline finished")
 
 
 # ---------------------------

@@ -31,7 +31,7 @@ def objective(trial, ticker, data_dir=None):
         data_dir: Optional data directory
 
     Returns:
-        float: Sharpe ratio (or other metric to maximize)
+        float: metric to maximize
     """
 
     # ============================================================
@@ -145,7 +145,7 @@ def objective(trial, ticker, data_dir=None):
         model = train_model(
             X_train, y_train, X_val, y_val,
             input_size=X_train.shape[2],
-            epochs=100,  # Max epochs (early stopping will cut short)
+            epochs=100,  # Max epochs (early stopping will always stop it)
             batch_size=batch_size,
             lr=learning_rate,
             d_model=d_model,

@@ -14,7 +14,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RAW_DATA_DIR = os.path.join(BASE_DIR, "data/raw")
 
 --- Train.py ---
-if __name__ == "__main__" tests run on dummy data
+if __name__ == "__main__" tests run on dummy data.
 Useful for visualisation of tensorboard metrics change or training changes
 
 
@@ -50,7 +50,7 @@ Note: added automatic opening, use manual way if needed shouldn't be the case
 python main.py --ticker MSFT --window 120 --epochs 80 --batch 256 --lr 3e-4 --d_model 256 --nhead 8 --num_layers 6 --dim_feedforward 1024 --dropout 0.1 --threshold 0.02 --transaction_cost 0.0015 --grad_clip_percentile 95 --lr_scheduler_patience 6 --lr_scheduler_factor 0.5 --patience 20
 
  - Smaller model for faster training
-python main.py --ticker MSFT --window 20 --epochs 20 --batch 128 --lr 1e-4 --d_model 64 --nhead 4 --num_layers 2 --dim_feedforward 256 --dropout 0.1 --threshold 0.02 --transaction_cost 0.0015 --grad_clip_percentile 95 --lr_scheduler_patience 6 --lr_scheduler_factor 0.5 --patience 20
+python main.py --ticker MSFT --window 20 --epochs 20 --batch 128 --lr 1e-4 --d_model 64 --nhead 4 --num_layers 2 --dim_feedforward 256 --dropout 0.1 --threshold 0.02 --transaction_cost 0.0015 --grad_clip_percentile 95 --lr_scheduler_patience 6 --lr_scheduler_factor 0.5 --patience 20 --no_adaptive_clipping
 
  --- Visualization commands:
  --no_viz: no plotting at the end

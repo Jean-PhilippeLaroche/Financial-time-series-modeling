@@ -100,7 +100,7 @@ def launch_tensorboard(logdir="runs", port=6006):
         return tb_process
 
     except FileNotFoundError:
-        print("TensorBoard not found. Please install it with `pip install tensorboard`.")
+        print("TensorBoard not found. Install it with `pip install tensorboard`.")
         return None
 
 
@@ -121,7 +121,7 @@ logging.info(f"Using device: {DEVICE}")
 
 
 # -----------------------------
-# Block 2: Experiment Logging
+# Experiment Logging
 # -----------------------------
 def get_tensorboard_writer(log_dir="runs"):
     """
@@ -144,7 +144,7 @@ def get_tensorboard_writer(log_dir="runs"):
 
 
 # -----------------------------
-# Block 3: Transformer Model Definition
+# Transformer Model Definition
 # -----------------------------
 
 class PositionalEncoding(nn.Module):
@@ -273,7 +273,7 @@ class TimeSeriesTransformerPooled(nn.Module):
 
 
 # -----------------------------
-# Block 4: Training Loop
+# Training Loop
 # -----------------------------
 
 def train_model(X_train, y_train, X_val, y_val, input_size,
@@ -346,9 +346,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
     checkpoint_path = "best_model.pth"
     epochs_without_improvement = 0
 
-    # -----------------------
-    # PROFILING DATA STORAGE
-    # -----------------------
+    # Timer data storage
     epoch_times = []
     train_loop_times = []
     val_loop_times = []
@@ -356,6 +354,8 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
     forward_times = []
     backward_times = []
     optimizer_times = []
+    adaptive_clipping_times = []
+    other_times = []
 
     print("\n=== TRAINING PROFILER ===")
 
@@ -375,22 +375,21 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         ep_forward = 0.0
         ep_backward = 0.0
         ep_optimizer = 0.0
+        ep_adaptive_clipping = 0.0
+        ep_other = 0.0
+        ep_train_loop = 0.0
 
         # Clipping tracking variables
         num_clips = 0
         total_clip_value = 0.0
 
         for batch_X, batch_y in train_loader:
-            t0 = time.time()
             batch_load_start = time.time()
             batch_X, batch_y = batch_X.to(DEVICE), batch_y.to(DEVICE)
-            batch_load_times.append(time.time() - batch_load_start)
 
-            load_time = time.time() - t0
-            ep_batch_load += load_time
+            ep_batch_load += (time.time() - batch_load_start)
 
             # Forward pass
-            t0 = time.time()
             fwd_start = time.time()
 
             outputs, attn = model(batch_X)
@@ -404,47 +403,47 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
             mean_attn = [a.mean(dim=0).detach().cpu().numpy() for a in attn]
             # mean_attn becomes a list: [ (heads, seq, seq), ... per layer ]
 
-            forward_times.append(time.time() - fwd_start)
-
-            fwd_time = time.time() - t0
-            ep_forward += fwd_time
-
             loss = criterion(outputs, batch_y)
 
+            ep_forward += time.time() - fwd_start
+
             # Backward pass
-            t0 = time.time()
             bwd_start = time.time()
             loss.backward()
-            backward_times.append(time.time() - bwd_start)
 
-            bwd_time = time.time() - t0
-            ep_backward += bwd_time
+            ep_backward += time.time() - bwd_start
 
             # Adaptive gradient clipping
             if use_adaptive_clipping:
+                adapt_start = time.time()
                 clip_value = adaptive_grad_clip(model, percentile=grad_clip_percentile)
                 if clip_value is not None:
                     num_clips += 1
                     total_clip_value += clip_value
+                ep_adaptive_clipping += time.time() - adapt_start
 
             # Optimizer
-            t0 = time.time()
             opt_start = time.time()
             optimizer.step()
             optimizer.zero_grad()
-            optimizer_times.append(time.time() - opt_start)
-
-            opt_time = time.time() - t0
-            ep_optimizer += opt_time
 
             train_losses.append(loss.item())
 
-        train_loop_times.append(time.time() - train_loop_start)
+            ep_optimizer += time.time() - opt_start
+
+        # Timer values
+        ep_train_loop += time.time() - train_loop_start
+        ep_other = ep_train_loop - (ep_forward + ep_backward + ep_optimizer
+                                    + ep_adaptive_clipping + ep_batch_load)
+
+        train_loop_times.append(ep_train_loop)
 
         batch_load_times.append(ep_batch_load)
         forward_times.append(ep_forward)
         backward_times.append(ep_backward)
         optimizer_times.append(ep_optimizer)
+        adaptive_clipping_times.append(ep_adaptive_clipping)
+        other_times.append(ep_other)
 
 
         # --------------------------
@@ -504,13 +503,20 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         # CONSOLE LOGGING
         # --------------------------
         logging.info(f"\nEpoch {epoch}/{epochs}")
-        print(f"  Train Loop: {train_loop_times[-1]:.3f}s")
-        print(f"    Batch loading: {ep_batch_load:.2f}s")
-        print(f"    Forward pass : {ep_forward:.2f}s")
-        print(f"    Backward pass: {ep_backward:.2f}s")
-        print(f"    Optimizer    : {ep_optimizer:.2f}s")
+        total_train = train_loop_times[-1]
+
+        print(f"  Train Loop: {total_train:.3f}s")
+        print(f"    Batch loading:     {ep_batch_load:>6.2f}s ({ep_batch_load / total_train * 100:>5.1f}%)")
+        print(f"    Forward pass :      {ep_forward:>6.2f}s ({ep_forward / total_train * 100:>5.1f}%)")
+        print(f"    Backward pass:     {ep_backward:>6.2f}s ({ep_backward / total_train * 100:>5.1f}%)")
+
+        if use_adaptive_clipping:
+            print(f"    Adaptive clipping: {ep_adaptive_clipping:>6.2f}s ({ep_adaptive_clipping / total_train * 100:>5.1f}%)")
+
+        print(f"    Optimizer:         {ep_optimizer:>6.2f}s ({ep_optimizer / total_train * 100:>5.1f}%)")
+        print(f"    Other:             {ep_other:>6.2f}s ({ep_other / total_train * 100:>5.1f}%)")
         print(f"  Validation Loop:   {val_loop_times[-1]:.3f}s")
-        print(f"  Total:      {epoch_times[-1]:.3f}s")
+        print(f"  Total:      {epoch_times[epoch-1]:.3f}s")
         print(f"  Loss:       {avg_train_loss:.6f} (train), {avg_val_loss:.6f} (val)")
         print(f"  LR:         {optimizer.param_groups[0]['lr']:.2e}")
 
