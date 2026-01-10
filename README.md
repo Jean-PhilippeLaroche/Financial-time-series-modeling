@@ -6,6 +6,7 @@ Beyond predictive accuracy, the project emphasizes interpretability through atte
 The full end-to-end pipeline from data ingestion and feature engineering to model training, visualization, and trading evaluation is documented in an Excalidraw diagram.
 https://excalidraw.com/#json=4mQ57WtX6dZF32uV4L1DO,EDTs6uWyswa4nHoszKC7bw
 
+
 # Path
 No hardcoded absolute paths for exporting(like C:/Users/...).
 os.path.join(BASE_DIR, ...) so project works on any machine
@@ -36,14 +37,11 @@ Using Git to keep the code synced.
 Raw data tracked as well for now, small enough
 
 
-# Command for multi ticker history price download for raw data:
-python scripts/download_data_polygon.py --tickers AAPL MSFT AMZN JPM BAC XOM CAT WMT KO TSLA --start 2020-11-01 --end 2025-11-01 --interval 1m --output_dir data/raw
-
-
 # How top open Tensorboard log files under runs folder:
 1. tensorboard --logdir=runs indide project .venv terminal
 2. go to browser and type http://localhost:6006
 Note: added automatic opening, use manual way if needed shouldn't be the case
+
 
 # Run Commands
  - Larger model for better performance
@@ -57,13 +55,16 @@ python main.py --ticker MSFT --window 20 --epochs 20 --batch 128 --lr 1e-4 --d_m
  --model_interpretation: calls main_interpretation, export weights to a .json file
 and the parameters to a .csv file from best_model.pth
 
+ --- Command for multi ticker history price download for raw data:
+python scripts/download_data_polygon.py --tickers AAPL MSFT AMZN JPM BAC XOM CAT WMT KO TSLA --start 2020-11-01 --end 2025-11-01 --interval 1m --output_dir data/raw
+
+
 # Ticker choice
 If AAPL or MSFT is selected as the ticker, the data will be automatically loaded from the
-SQLite database. Other tickers will be loaded from the .csv files
+SQLite database. AMZN, BAC, CAT, JPM, KO, TSLA, WMT and XOM will be loaded from the .csv files
 
 
 # Hypertuning parameters
-
 python hyperparameter_tuning.py --ticker MSFT --n_trials 50
 
 CAUTION:
@@ -87,6 +88,80 @@ List of parameters:
   --lr_scheduler_patience 6
   --lr_scheduler_factor 0.5
   --patience 20
+
+
+# Activation histograms in Tensorboard guide
+1. Input Projection
+Healthy Range:
+Mean: -0.5 to +0.5
+Std: 0.5 to 2.0
+Min/Max: -5 to +5
+
+2. After Positional Encoding
+Healthy Range:
+Mean: -0.5 to +0.5
+Std: 0.5 to 2.5
+Min/Max: -6 to +6
+
+3. After Attention Layers (layer_N_after_attn)
+Healthy Range for Layer 0:
+Mean: -0.3 to +0.3
+Std: 0.5 to 2.0
+Min/Max: -8 to +8
+
+Healthy Range for Layer 1:
+Mean: -0.5 to +0.5
+Std: 0.7 to 3.0
+Min/Max: -10 to +10
+
+Healthy Range for Layer 2:
+Mean: -0.7 to +0.7
+Std: 1.0 to 4.0
+Min/Max: -12 to +12
+
+4. After Feed-Forward Networks (layer_N_after_ffn)
+Healthy Range for Layer 0:
+Mean: -0.3 to +0.3
+Std: 0.8 to 3.0
+Min/Max: -10 to +10
+
+Healthy Range for Layer 1:
+Mean: -0.5 to +0.5
+Std: 1.0 to 4.0
+Min/Max: -12 to +12
+
+Healthy Range for Layer 2:
+Mean: -0.7 to +0.7
+Std: 1.5 to 5.0
+Min/Max: -15 to +15
+
+5. Concatenated Pooling (concat_pool)
+Healthy Range:
+Mean: -0.5 to +0.5
+Std: 1.0 to 5.0
+Min/Max: -15 to +15
+
+--- What to look for ---
+Gradual distribution widening: Each layer has slightly wider distribution than previous (but not exponentially)
+Centered distributions: Mean stays close to zero across all layers
+Stable over epochs: Distribution parameters don't change drastically between epochs
+Bell-shaped histograms: Most values concentrated near the mean with smooth tails
+Consistent std growth: Standard deviation grows predictably (~20-50% per layer)
+
+--- What to avoid ---
+Mean drift: Mean moving away from zero over epochs
+Bimodal distributions: Two distinct peaks in histogram
+High sparsity: >50% of activations very close to zero (meaning dead neurons)
+Saturation: Large portion of activations at extreme values (>10 or <-10)
+Erratic changes: Distribution shifts dramatically between epochs
+
+--- When to stop training
+Exploding activations: Std > 20 or Min/Max beyond ±50
+Vanishing activations: Std < 0.01 in any layer after first epoch
+NaN or Inf values: Any non-finite values in histograms
+Collapse: All activations converge to single value
+Exponential growth: Each layer's std is 2x or more than previous layer
+
 
 # TO DO:
 1. Add forward testing with the best_model.pth

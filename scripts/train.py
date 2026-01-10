@@ -6,7 +6,7 @@ The training process:
 1. Load and prepare data (from data_utils).
 2. Define a neural network model.
 3. Train the model on historical sequences.
-4. Save the trained model for later inference.
+4. Save the trained model.
 
 TODO:
 - Add support for multiple tickers (portfolio-level training).
@@ -35,6 +35,37 @@ from utils.transformer_visuals import (
     set_feature_names,
     log_feature_importance_to_tensorboard
 )
+from utils.activation_health_check import (
+    check_activation_health,
+    log_activation_health_to_tensorboard
+)
+
+
+def log_activations_to_tensorboard(writer, activations, epoch):
+    """
+    Log activation histograms to TensorBoard.
+
+    Args:
+        writer: TensorBoard writer
+        activations: Dict of activation tensors
+        epoch: Current epoch
+    """
+    if writer is None:
+        return
+
+    for name, activation in activations.items():
+        # Log histogram
+        writer.add_histogram(f'Activations/{name}', activation, epoch)
+
+        # Log statistics
+        writer.add_scalar(f'Activations_Stats/{name}_mean',
+                          activation.mean().item(), epoch)
+        writer.add_scalar(f'Activations_Stats/{name}_std',
+                          activation.std().item(), epoch)
+        writer.add_scalar(f'Activations_Stats/{name}_max',
+                          activation.max().item(), epoch)
+        writer.add_scalar(f'Activations_Stats/{name}_min',
+                          activation.min().item(), epoch)
 
 
 def adaptive_grad_clip(model, percentile=95):
@@ -231,15 +262,20 @@ class TimeSeriesTransformerPooled(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def forward(self, x):
+
+        activations = {}
+
         # Project and add positional encoding
         x = self.input_projection(x)
+        activations['input_projection'] = x.detach()
         x = self.pos_encoder(x)
+        activations['after_pos_encoding'] = x.detach()
 
         # to store attention values for viz
         all_attn = []
 
         # Manually forward through layers to access attention weights
-        for layer in self.transformer_encoder.layers:
+        for layer_idx, layer in enumerate(self.transformer_encoder.layers):
             x_before = x
             x2, attn = layer.self_attn(
                 x_before,
@@ -250,9 +286,15 @@ class TimeSeriesTransformerPooled(nn.Module):
             )
             all_attn.append(attn)  # shape: (batch, heads, seq, seq)
 
-            # Continue through feedforward part
+            # After attention
             x = layer.norm1(x_before + x2)
-            x = layer.norm2(x + layer.linear2(layer.dropout(layer.activation(layer.linear1(x)))))
+            activations[f'layer_{layer_idx}_after_attn'] = x.detach()
+
+            # After feedforward
+            ff_out = layer.linear2(layer.dropout(layer.activation(layer.linear1(x))))
+            x = layer.norm2(x + ff_out)
+            activations[f'layer_{layer_idx}_after_ffn'] = x.detach()
+
 
         # Pool over sequence dimension
         # Mean pooling captures average pattern
@@ -262,12 +304,13 @@ class TimeSeriesTransformerPooled(nn.Module):
 
         # Concatenate both pooling strategies
         x = torch.cat([mean_pool, max_pool], dim=1)  # (batch, 2*d_model)
+        activations['concat_pool'] = x.detach()
 
         # Output projection
         output = self.output_projection(x)
 
         if self.return_attn:
-            return output, all_attn
+            return output, all_attn, activations
         else:
             return output
 
@@ -346,6 +389,10 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
     checkpoint_path = "best_model.pth"
     epochs_without_improvement = 0
 
+    # Activation specific tracking variables
+    consecutive_unhealthy_epochs = 0
+    max_unhealthy_epochs = 5
+
     # Timer data storage
     epoch_times = []
     train_loop_times = []
@@ -392,7 +439,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
             # Forward pass
             fwd_start = time.time()
 
-            outputs, attn = model(batch_X)
+            outputs, attn, activations = model(batch_X)
             outputs = outputs.squeeze(-1)
 
             # Store the last batch_X and attn for epoch-level logging
@@ -457,7 +504,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
             for batch_X, batch_y in val_loader:
                 batch_X, batch_y = batch_X.to(DEVICE), batch_y.to(DEVICE)
 
-                outputs, _ = model(batch_X)
+                outputs, _, _ = model(batch_X)
                 outputs = outputs.squeeze(-1)
 
                 val_loss = criterion(outputs, batch_y)
@@ -483,6 +530,10 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
             writer.add_scalar('Loss/validation', avg_val_loss, epoch)
             writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], epoch)
 
+            if epoch % 1 == 0:  # Every epoch
+                log_activations_to_tensorboard(writer, activations, epoch)
+                log_activation_health_to_tensorboard(writer, activations, epoch, num_layers)
+
             # Gradient clipping statistics
             if num_clips > 0:
                 avg_clip_value = total_clip_value / num_clips
@@ -500,25 +551,53 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
                                 f"Adjust learning rate.")
 
         # --------------------------
+        # ACTIVATION HEALTH CHECK
+        # --------------------------
+        # Run health check (even if writer is None)
+        is_healthy, warnings = check_activation_health(activations, epoch, num_layers)
+
+        # Print warnings to console if any issues detected
+        if not is_healthy or len(warnings) > 0:
+            print(f"\n{'=' * 70}")
+            if is_healthy:
+                print(f"ACTIVATION WARNINGS (Epoch {epoch})")
+            else:
+                print(f"CRITICAL ACTIVATION ISSUES (Epoch {epoch})")
+            print(f"{'=' * 70}")
+            for warning in warnings:
+                print(f"  {warning}")
+            print(f"{'=' * 70}\n")
+
+        # Track consecutive unhealthy epochs
+        if not is_healthy:
+            consecutive_unhealthy_epochs += 1
+            logging.warning(f"Unhealthy activations for {consecutive_unhealthy_epochs} consecutive epoch(s)")
+        else:
+            # Reset counter if activations are healthy
+            if consecutive_unhealthy_epochs > 0:
+                logging.info(f"Activations recovered after {consecutive_unhealthy_epochs} unhealthy epoch(s)")
+            consecutive_unhealthy_epochs = 0
+
+        # --------------------------
         # CONSOLE LOGGING
         # --------------------------
         logging.info(f"\nEpoch {epoch}/{epochs}")
         total_train = train_loop_times[-1]
 
         print(f"  Train Loop: {total_train:.3f}s")
-        print(f"    Batch loading:     {ep_batch_load:>6.2f}s ({ep_batch_load / total_train * 100:>5.1f}%)")
-        print(f"    Forward pass :      {ep_forward:>6.2f}s ({ep_forward / total_train * 100:>5.1f}%)")
-        print(f"    Backward pass:     {ep_backward:>6.2f}s ({ep_backward / total_train * 100:>5.1f}%)")
+        print(f"    Batch loading:       {ep_batch_load:>6.2f}s ({ep_batch_load / total_train * 100:>5.1f}%)")
+        print(f"    Forward pass :       {ep_forward:>6.2f}s ({ep_forward / total_train * 100:>5.1f}%)")
+        print(f"    Backward pass:       {ep_backward:>6.2f}s ({ep_backward / total_train * 100:>5.1f}%)")
 
         if use_adaptive_clipping:
-            print(f"    Adaptive clipping: {ep_adaptive_clipping:>6.2f}s ({ep_adaptive_clipping / total_train * 100:>5.1f}%)")
+            print(f"    Adaptive clipping:   {ep_adaptive_clipping:>6.2f}s ({ep_adaptive_clipping / total_train * 100:>5.1f}%)")
 
-        print(f"    Optimizer:         {ep_optimizer:>6.2f}s ({ep_optimizer / total_train * 100:>5.1f}%)")
-        print(f"    Other:             {ep_other:>6.2f}s ({ep_other / total_train * 100:>5.1f}%)")
+        print(f"    Optimizer:           {ep_optimizer:>6.2f}s ({ep_optimizer / total_train * 100:>5.1f}%)")
+        print(f"    Other:               {ep_other:>6.2f}s ({ep_other / total_train * 100:>5.1f}%)")
         print(f"  Validation Loop:   {val_loop_times[-1]:.3f}s")
-        print(f"  Total:      {epoch_times[epoch-1]:.3f}s")
-        print(f"  Loss:       {avg_train_loss:.6f} (train), {avg_val_loss:.6f} (val)")
-        print(f"  LR:         {optimizer.param_groups[0]['lr']:.2e}")
+        print(f"  Total:             {epoch_times[epoch-1]:.3f}s")
+        print(f"  Loss:              {avg_train_loss:.6f} (train), {avg_val_loss:.6f} (val)")
+        print(f"  LR:                {optimizer.param_groups[0]['lr']:.2e}")
 
         # --------------------------
         # Early Stopping
@@ -546,15 +625,17 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
     # FINAL PROFILING SUMMARY
     # --------------------------
     print("\n=== TRAINING PROFILING SUMMARY ===")
-    print(f"Epoch avg time:     {np.mean(epoch_times):.3f}s")
-    print(f"Train loop avg:     {np.mean(train_loop_times):.3f}s")
-    print(f"Val loop avg:       {np.mean(val_loop_times):.3f}s")
+    print(f"Epoch avg time:        {np.mean(epoch_times):.3f}s")
+    print(f"Train loop avg:        {np.mean(train_loop_times):.3f}s")
+    print(f"Val loop avg:          {np.mean(val_loop_times):.3f}s")
 
     print("\n--- Batch timings ---")
-    print(f"Avg batch load:     {np.mean(batch_load_times):.6f}s")
-    print(f"Avg forward pass:   {np.mean(forward_times):.6f}s")
-    print(f"Avg backward pass:  {np.mean(backward_times):.6f}s")
-    print(f"Avg optimizer step: {np.mean(optimizer_times):.6f}s")
+    print(f"Avg batch load:        {np.mean(batch_load_times):.6f}s")
+    print(f"Avg forward pass:      {np.mean(forward_times):.6f}s")
+    print(f"Avg backward pass:     {np.mean(backward_times):.6f}s")
+    print(f"Avg adaptive clipping: {np.mean(adaptive_clipping_times):.6f}s")
+    print(f"Avg optimizer step:    {np.mean(optimizer_times):.6f}s")
+    print(f"Avg other:             {np.mean(other_times):.6f}s")
 
     return model
 
