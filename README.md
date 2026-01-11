@@ -30,6 +30,8 @@ pip3 install torch torchvision torchaudio --index url https://download.pytorch.o
 
 # Logging & outputs
 All logs, models, and outputs are inside the project folder (e.g., logs/ or models/).
+Model data tracked using Tensorboard during training, running on localhost.
+Attention heatmaps tracked using Dash, running on localhost
 
 
 # Version control
@@ -44,10 +46,10 @@ Note: added automatic opening, use manual way if needed shouldn't be the case
 
 
 # Run Commands
- - Larger model for better performance
+ - Larger model for better performance:
 python main.py --ticker MSFT --window 120 --epochs 80 --batch 256 --lr 3e-4 --d_model 256 --nhead 8 --num_layers 6 --dim_feedforward 1024 --dropout 0.1 --threshold 0.02 --transaction_cost 0.0015 --grad_clip_percentile 95 --lr_scheduler_patience 6 --lr_scheduler_factor 0.5 --patience 20
 
- - Smaller model for faster training
+ - Smaller model for faster training:
 python main.py --ticker MSFT --window 20 --epochs 20 --batch 128 --lr 1e-4 --d_model 64 --nhead 4 --num_layers 2 --dim_feedforward 256 --dropout 0.1 --threshold 0.02 --transaction_cost 0.0015 --grad_clip_percentile 95 --lr_scheduler_patience 6 --lr_scheduler_factor 0.5 --patience 20 --no_adaptive_clipping
 
  --- Visualization commands:

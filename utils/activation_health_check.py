@@ -324,13 +324,20 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
     # =========================================================================
     # FINAL SUMMARY
     # =========================================================================
+
+    # Colors
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    RESET = "\033[0m"
+
     if text:
         if is_healthy and len(warnings) == 0:
-            logging.info(f"Epoch {epoch}: All activation checks passed, model is healthy")
+            logging.info(f"{GREEN}Epoch {epoch}: All activation checks passed, model is healthy{RESET}")
         elif is_healthy and len(warnings) > 0:
-            logging.info(f"Epoch {epoch}: Model is healthy with {len(warnings)} minor warnings")
+            logging.info(f"{GREEN}Epoch {epoch}: Model is healthy with {len(warnings)} minor warnings{RESET}")
         else:
-            logging.error(f"Epoch {epoch}: Critical activation issues detected, ({len(warnings)} total issues)")
+            logging.error(f"{RED}Epoch {epoch}: Critical activation issues detected, ({len(warnings)} total issues){RESET}")
 
     return is_healthy, warnings
 

@@ -1,10 +1,22 @@
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import dash
+from dash import dcc, html
+from dash.dependencies import Input, Output
+import threading
+import numpy as np
+import webbrowser
+from time import sleep
+import logging
 
-# Global figure (persists across epochs)
-_fig = None
-_axes = None
+# Global state
+_app = None
+_server_thread = None
+_current_data = None
+_num_layers = None
+_n_heads = None
+_current_epoch = 0
 _initialized = False
 
 # Feature importance tracking
@@ -12,64 +24,116 @@ _feature_importance_history = []
 _feature_names = None
 
 
-def init_attention_window(num_layers, n_heads, seq_len):
+def init_attention_window(num_layers, n_heads, seq_len, port=8050):
     """
-    Creates a persistent window showing attention heatmaps.
+    Creates a persistent Dash app showing attention heatmaps.
     One subplot per head per layer.
+    Opens in browser automatically.
     """
-    global _fig, _axes, _initialized
+    global _app, _server_thread, _current_data, _num_layers, _n_heads, _initialized
+
     if _initialized:
         return
 
-    total_plots = num_layers * n_heads
-    cols = n_heads
-    rows = num_layers
+    _num_layers = num_layers
+    _n_heads = n_heads
 
-    _fig, _axes = plt.subplots(rows, cols, figsize=(3 * cols, 3 * rows))
+    # Initialize with zeros
+    _current_data = [np.zeros((n_heads, seq_len, seq_len)) for _ in range(num_layers)]
 
-    if rows == 1 and cols == 1:
-        _axes = np.array([[_axes]])
-    elif rows == 1:
-        _axes = np.array([_axes])
-    elif cols == 1:
-        _axes = np.array([[_axes[i]] for i in range(rows)])
+    # Create Dash app
+    _app = dash.Dash(__name__)
 
-    for layer in range(num_layers):
-        for head in range(n_heads):
-            ax = _axes[layer][head]
-            ax.set_title(f"Layer {layer + 1}, Head {head + 1}")
-            ax.set_xticks([])
-            ax.set_yticks([])
+    # Layout
+    _app.layout = html.Div([
+        html.H1("Attention Heatmaps", style={'textAlign': 'center'}),
+        html.Div(id='epoch-display', style={'textAlign': 'center', 'fontSize': 20}),
+        dcc.Graph(id='attention-heatmap', style={'height': '90vh'}),
+        dcc.Interval(
+            id='interval-component',
+            interval=5000,  # Update every 5000ms -> 5s
+            n_intervals=0
+        )
+    ])
 
-    plt.tight_layout()
-    plt.ion()
-    plt.show()
+    # Callback to update the graph
+    @_app.callback(
+        [Output('attention-heatmap', 'figure'),
+         Output('epoch-display', 'children')],
+        Input('interval-component', 'n_intervals')
+    )
+    def update_graph(n):
+        global _current_data, _current_epoch, _num_layers, _n_heads
+
+        # Create subplots
+        fig = make_subplots(
+            rows=_num_layers,
+            cols=_n_heads,
+            subplot_titles=[f"L{l + 1} H{h + 1}" for l in range(_num_layers) for h in range(_n_heads)],
+            vertical_spacing=0.1 / _num_layers,
+            horizontal_spacing=0.05 / _n_heads
+        )
+
+        # Add heatmaps
+        for layer in range(_num_layers):
+            for head in range(_n_heads):
+                fig.add_trace(
+                    go.Heatmap(
+                        z=_current_data[layer][head],
+                        colorscale='Viridis',
+                        showscale=(head == _n_heads - 1),  # Only show colorbar on last column
+                        zmin=None,
+                        zmax=None
+                    ),
+                    row=layer + 1,
+                    col=head + 1
+                )
+
+        # Update layout
+        fig.update_xaxes(showticklabels=False)
+        fig.update_yaxes(showticklabels=False)
+        fig.update_layout(
+            height=max(300 * _num_layers, 600),
+            showlegend=False,
+            margin=dict(l=20, r=20, t=80, b=20)
+        )
+
+        epoch_text = f"Epoch: {_current_epoch}"
+
+        return fig, epoch_text
+
+    # Run server in background thread
+    def run_server():
+        # Silence Flask and Werkzeug logs
+        logging.getLogger('werkzeug').setLevel(logging.ERROR)
+        logging.getLogger('dash').setLevel(logging.ERROR)
+
+        _app.run(debug=False, port=port, use_reloader=False)
+
+    _server_thread = threading.Thread(target=run_server, daemon=True)
+    _server_thread.start()
+
+    # Open browser after short delay
+    sleep(1.5)
+    url = f"http://localhost:{port}"
+    webbrowser.open(url)
+
     _initialized = True
 
 
 def update_attention_window(mean_attn, epoch):
     """
     mean_attn: list of [heads, seq, seq] arrays (one per layer)
-    updates the live attention heatmap window in real time
+    Updates the live attention heatmap window.
     """
-    global _fig, _axes
-    if _fig is None:
-        return  # window not created yet
+    global _current_data, _current_epoch
 
-    num_layers = len(mean_attn)
-    num_heads = mean_attn[0].shape[0]
+    if not _initialized:
+        print("Warning: Attention window not initialized. Call init_attention_window() first.")
+        return
 
-    for layer in range(num_layers):
-        for head in range(num_heads):
-            ax = _axes[layer][head]
-            ax.clear()
-            ax.set_title(f"Layer {layer + 1}, Head {head + 1} (Epoch {epoch})")
-            ax.imshow(mean_attn[layer][head], cmap='viridis', aspect='auto')
-            ax.set_xticks([])
-            ax.set_yticks([])
-
-    _fig.canvas.draw()
-    _fig.canvas.flush_events()
+    _current_data = mean_attn
+    _current_epoch = epoch
 
 
 def set_feature_names(feature_names):

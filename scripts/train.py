@@ -361,7 +361,8 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         dropout=dropout
     ).to(DEVICE)
 
-    init_attention_window(num_layers, nhead, X_train.shape[1])
+    if writer is not None:
+        init_attention_window(num_layers, nhead, X_train.shape[1])
 
     logging.info(f"Initialized Transformer with {sum(p.numel() for p in model.parameters()):,} parameters")
 
@@ -404,7 +405,13 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
     adaptive_clipping_times = []
     other_times = []
 
-    print("\n=== TRAINING PROFILER ===")
+    # Colors
+    BLUE = "\033[94m"
+    RESET = "\033[0m"
+
+    print(f"\n{BLUE}{'=' * 70}{RESET}")
+    print(f"{BLUE}TRAINING PROFILER{RESET}")
+    print(f"{BLUE}{'=' * 70}{RESET}")
 
     for epoch in range(1, epochs + 1):
         epoch_start = time.time()
@@ -519,7 +526,8 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
 
         epoch_times.append(time.time() - epoch_start)
 
-        update_attention_window(mean_attn, epoch)
+        if writer is not None:
+            update_attention_window(mean_attn, epoch)
 
         # --------------------------
         # TENSORBOARD LOGGING
@@ -545,14 +553,19 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
             writer.add_scalar('Gradients/avg_clip_value', avg_clip_value, epoch)
             writer.add_scalar('Gradients/clip_rate', clip_rate, epoch)
 
+            # Colors
+            YELLOW = "\033[93m"
+            GREEN = "\033[92m"
+            RED = "\033[91m"
+            RESET = "\033[0m"
+
             # Warning if clipping too frequently
             if clip_rate > 0.8:
-                print(f"\n{'=' * 70}")
-                print(f"ADAPTIVE CLIPPING WARNING (Epoch {epoch})")
-                print(f"{'=' * 70}")
-                logging.warning(f"High clipping rate ({clip_rate:.1%}). "
-                                f"Adjust learning rate.")
-                print(f"{'=' * 70}\n")
+                print(f"\n{YELLOW}{'-' * 70}{RESET}")
+                print(f"{YELLOW}ADAPTIVE CLIPPING WARNING (Epoch {epoch}){RESET}")
+                print(f"{YELLOW}{'-' * 70}{RESET}")
+                logging.warning(f"High clipping rate ({clip_rate:.1%})")
+                print(f"{YELLOW}{'-' * 70}{RESET}\n")
 
         # --------------------------
         # ACTIVATION HEALTH CHECK
@@ -562,15 +575,21 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
 
         # Print warnings to console if any issues detected
         if not is_healthy or len(warnings) > 0:
-            print(f"\n{'=' * 70}")
             if is_healthy:
-                print(f"ACTIVATION WARNINGS (Epoch {epoch})")
+                print(f"\n{YELLOW}{'-' * 70}{RESET}")
+                print(f"{YELLOW}ACTIVATION WARNINGS (Epoch {epoch}){RESET}")
+                print(f"{YELLOW}{'-' * 70}{RESET}")
             else:
-                print(f"CRITICAL ACTIVATION ISSUES (Epoch {epoch})")
-            print(f"{'=' * 70}")
+                print(f"\n{RED}{'-' * 70}{RESET}")
+                print(f"{RED}CRITICAL ACTIVATION ISSUES (Epoch {epoch}){RESET}")
+                print(f"{RED}{'-' * 70}{RESET}")
             for warning in warnings:
                 print(f"  {warning}")
-            print(f"{'=' * 70}\n")
+
+            if is_healthy:
+                print(f"{YELLOW}{'-' * 70}{RESET}\n")
+            else:
+                print(f"{RED}{'-' * 70}{RESET}\n")
 
         # Track consecutive unhealthy epochs
         if not is_healthy:
@@ -585,7 +604,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         # --------------------------
         # CONSOLE LOGGING
         # --------------------------
-        logging.info(f"\nEpoch {epoch}/{epochs}")
+        logging.info(f"{BLUE}Epoch {epoch}/{epochs}{RESET}")
         total_train = train_loop_times[-1]
 
         print(f"  Train Loop: {total_train:.3f}s")
@@ -600,7 +619,11 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         print(f"    Other:               {ep_other:>6.2f}s ({ep_other / total_train * 100:>5.1f}%)")
         print(f"  Validation Loop:   {val_loop_times[-1]:.3f}s")
         print(f"  Total:             {epoch_times[epoch-1]:.3f}s")
-        print(f"  Loss:              {avg_train_loss:.6f} (train), {avg_val_loss:.6f} (val)")
+
+        if avg_val_loss < best_val_loss:
+            print(f"{GREEN}  Loss:              {avg_train_loss:.6f} (train), {avg_val_loss:.6f} (val){RESET}")
+        else:
+            print(f"  Loss:              {avg_train_loss:.6f} (train), {avg_val_loss:.6f} (val){RESET}")
         print(f"  LR:                {optimizer.param_groups[0]['lr']:.2e}")
 
         # --------------------------
@@ -608,7 +631,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         # --------------------------
         if avg_val_loss < best_val_loss:
             torch.save(model.state_dict(), checkpoint_path)
-            logging.info(f"New best model saved (val_loss: {avg_val_loss:.6f})")
+            logging.info(f"{GREEN}New best model saved (val_loss: {avg_val_loss:.6f}){RESET}")
             best_val_loss = avg_val_loss
             epochs_without_improvement = 0
         else:
@@ -628,7 +651,9 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
     # --------------------------
     # FINAL PROFILING SUMMARY
     # --------------------------
-    print("\n=== TRAINING PROFILING SUMMARY ===")
+    print(f"\n{BLUE}{'=' * 70}{RESET}")
+    print(f"{BLUE}TRAINING PROFILER SUMMARY{RESET}")
+    print(f"{BLUE}{'=' * 70}{RESET}")
     print(f"Epoch avg time:        {np.mean(epoch_times):.3f}s")
     print(f"Train loop avg:        {np.mean(train_loop_times):.3f}s")
     print(f"Val loop avg:          {np.mean(val_loop_times):.3f}s")
