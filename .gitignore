@@ -1,0 +1,6 @@
+# Ignore model files
+*.pth
+
+# Ignore runs and logs folder
+runs/
+logs/
