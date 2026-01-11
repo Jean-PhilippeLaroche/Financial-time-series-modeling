@@ -547,8 +547,12 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
 
             # Warning if clipping too frequently
             if clip_rate > 0.8:
-                logging.warning(f"Epoch {epoch}: High clipping rate ({clip_rate:.1%}). "
+                print(f"\n{'=' * 70}")
+                print(f"ADAPTIVE CLIPPING WARNING (Epoch {epoch})")
+                print(f"{'=' * 70}")
+                logging.warning(f"High clipping rate ({clip_rate:.1%}). "
                                 f"Adjust learning rate.")
+                print(f"{'=' * 70}\n")
 
         # --------------------------
         # ACTIVATION HEALTH CHECK

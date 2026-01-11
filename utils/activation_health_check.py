@@ -5,7 +5,8 @@ from typing import Dict, List, Tuple
 
 def check_activation_health(activations: Dict[str, torch.Tensor],
                             epoch: int,
-                            num_layers: int) -> Tuple[bool, List[str]]:
+                            num_layers: int,
+                            text=True) -> Tuple[bool, List[str]]:
     """
     Automatically check if activation values are healthy or problematic.
 
@@ -17,6 +18,7 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
         activations: Dictionary of activation tensors from model forward pass
         epoch: Current epoch number
         num_layers: Total number of transformer layers in the model
+        text: display or not the console text, default is True
 
     Returns:
         Tuple of (is_healthy: bool, warnings: List[str])
@@ -99,8 +101,10 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
             if is_critical:
                 is_healthy = False
                 logging.error(msg)
-            else:
-                logging.warning(msg)
+
+            # Removed warning logs
+            #else:
+                #logging.warning(msg)
 
 
     def detect_dead_neurons(tensor: torch.Tensor, name: str, threshold: float = 0.01) -> None:
@@ -119,7 +123,8 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
         elif dead_ratio > 0.5:
             msg = f"WARNING - {name}: {dead_ratio * 100:.1f}% dead neurons (threshold: {threshold})"
             warnings.append(msg)
-            logging.warning(msg)
+            # Removed warning logs
+            #logging.warning(msg)
 
 
     def detect_saturation(tensor: torch.Tensor, name: str, threshold: float = 10.0) -> None:
@@ -130,7 +135,9 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
         if saturated_ratio > 0.1:  # >10% saturated is problematic
             msg = f"WARNING - {name}: {saturated_ratio * 100:.1f}% saturated (>{threshold})"
             warnings.append(msg)
-            logging.warning(msg)
+
+            # Removed warning logs
+            #logging.warning(msg)
 
     def check_nan_inf(tensor: torch.Tensor, name: str) -> bool:
         """Check for NaN or Inf values (critical error)."""
@@ -172,7 +179,9 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
                 msg = (f"WARNING - {layer_type} vanishing: "
                        f"Layer {i - 1} std={prev_std:.2f} → Layer {i} std={curr_std:.2f}")
                 warnings.append(msg)
-                logging.warning(msg)
+
+                # Removed warning logs
+                #logging.warning(msg)
 
     # =========================================================================
     # RUN CHECKS
@@ -206,7 +215,8 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
             if stats['abs_max'] > ranges['abs_max']:
                 msg = f"WARNING - {name}: max absolute value {stats['abs_max']:.2f} > {ranges['abs_max']}"
                 warnings.append(msg)
-                logging.warning(msg)
+
+                #logging.warning(msg)
 
             # Check for dead neurons (less strict for input)
             detect_dead_neurons(activation, name, threshold=0.001)
@@ -225,7 +235,7 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
             if stats['abs_max'] > ranges['abs_max']:
                 msg = f"WARNING - {name}: max absolute value {stats['abs_max']:.2f} > {ranges['abs_max']}"
                 warnings.append(msg)
-                logging.warning(msg)
+                #logging.warning(msg)
 
         # =====================================================================
         # 3. CHECK TRANSFORMER LAYERS
@@ -270,7 +280,7 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
             if stats['abs_max'] > ranges['abs_max'] * 1.5:
                 msg = f"WARNING - {name}: max absolute value {stats['abs_max']:.2f} > {ranges['abs_max']}"
                 warnings.append(msg)
-                logging.warning(msg)
+                #logging.warning(msg)
 
             # Dead neuron detection (stricter for deeper layers)
             threshold = 0.01 if layer_idx == 0 else 0.05
@@ -294,13 +304,13 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
             if stats['abs_max'] > ranges['abs_max'] * 2:
                 msg = f"WARNING - {name}: max absolute value {stats['abs_max']:.2f} very high"
                 warnings.append(msg)
-                logging.warning(msg)
+                #logging.warning(msg)
 
             # Check if pooling is working (std too low = not learning)
             if stats['std'] < 0.5 and not is_warmup:
                 msg = f"WARNING - {name}: std={stats['std']:.3f} too low (model may not be learning)"
                 warnings.append(msg)
-                logging.warning(msg)
+                #logging.warning(msg)
 
     # =========================================================================
     # 5. CHECK LAYER-TO-LAYER PROGRESSION
@@ -314,12 +324,13 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
     # =========================================================================
     # FINAL SUMMARY
     # =========================================================================
-    if is_healthy and len(warnings) == 0:
-        logging.info(f"Epoch {epoch}: All activation checks passed, model is healthy")
-    elif is_healthy and len(warnings) > 0:
-        logging.info(f"Epoch {epoch}: Model is healthy with {len(warnings)} minor warnings")
-    else:
-        logging.error(f"Epoch {epoch}: Critical activation issues detected, ({len(warnings)} total issues)")
+    if text:
+        if is_healthy and len(warnings) == 0:
+            logging.info(f"Epoch {epoch}: All activation checks passed, model is healthy")
+        elif is_healthy and len(warnings) > 0:
+            logging.info(f"Epoch {epoch}: Model is healthy with {len(warnings)} minor warnings")
+        else:
+            logging.error(f"Epoch {epoch}: Critical activation issues detected, ({len(warnings)} total issues)")
 
     return is_healthy, warnings
 
@@ -338,7 +349,7 @@ def log_activation_health_to_tensorboard(writer, activations: Dict[str, torch.Te
     if writer is None:
         return
 
-    is_healthy, warnings = check_activation_health(activations, epoch, num_layers)
+    is_healthy, warnings = check_activation_health(activations, epoch, num_layers, False)
 
     # Log health status as scalar (1.0 = healthy, 0.0 = unhealthy)
     writer.add_scalar('ActivationHealth/is_healthy',
