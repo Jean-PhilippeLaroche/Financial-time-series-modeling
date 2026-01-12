@@ -21,6 +21,8 @@ def plot_price_vs_prediction(dates, actual, predicted, title="Price vs Predictio
     plt.legend()
     plt.grid(True, alpha=0.3)
 
+    print("Plotted actual stock prices vs model predictions")
+
 
 def plot_signals(dates, prices, signals, title="Trading Signals"):
     """
@@ -63,6 +65,8 @@ def plot_signals(dates, prices, signals, title="Trading Signals"):
     plt.legend()
     plt.grid(True, alpha=0.3)
 
+    print("Plotted trading signals")
+
 
 def plot_portfolio_equity(portfolio_values, dates=None):
     """
@@ -82,6 +86,8 @@ def plot_portfolio_equity(portfolio_values, dates=None):
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
+
+    print("Plotted portfolio equity curve")
 
 
 def plot_indicator_overlay(prices, indicators_dict, dates=None):
@@ -106,6 +112,8 @@ def plot_indicator_overlay(prices, indicators_dict, dates=None):
     plt.grid(True)
     plt.tight_layout()
 
+    print("Plotted indicator overlays")
+
 
 def plot_return_distribution(returns, bins=50):
     """
@@ -122,6 +130,8 @@ def plot_return_distribution(returns, bins=50):
     plt.title("Histogram of Daily Returns")
     plt.grid(True)
     plt.tight_layout()
+
+    print("Plotted histogram of daily returns")
 
 
 # ------------------

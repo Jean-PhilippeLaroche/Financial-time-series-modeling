@@ -76,6 +76,8 @@ def model_interpretation(ticker="AAPL", train_size=0.8, window_size=20,
     with open(results_file, "w") as f:
         json.dump(params_json, f, indent=2)
 
+    print(f"Model weights saved to {results_file}")
+
 
 def extract_model_parameters(num_layers=2, json_path='model_weights.json'):
     """
@@ -186,9 +188,9 @@ def print_parameter_shapes(model_params):
     """
     Print the shapes of all extracted parameters for verification.
     """
-    print("=" * 60)
+    print("=" * 70)
     print("MODEL PARAMETER SHAPES")
-    print("=" * 60)
+    print("=" * 70)
 
     print("\n1. INPUT EMBEDDING:")
     for name, param in model_params['input_embedding'].items():
@@ -218,7 +220,7 @@ def print_parameter_shapes(model_params):
     print("\n4. OUTPUT LAYER:")
     for name, param in model_params['output_layer'].items():
         print(f"   {name}: {param.shape}")
-    print("=" * 60)
+    print("=" * 70)
 
 
 def export_parameters_to_latex(model_params, output_file='model_params.tex'):

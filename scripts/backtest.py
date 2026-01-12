@@ -20,8 +20,17 @@ import numpy as np
 import pandas as pd
 import logging
 import torch
+from scripts.train import DEVICE
+import time
 
 logging.basicConfig(level=logging.INFO)
+
+# Colors
+YELLOW = "\033[93m"
+GREEN = "\033[92m"
+BLUE = "\033[94m"
+RED = "\033[91m"
+RESET = "\033[0m"
 
 
 class Backtester:
@@ -75,9 +84,9 @@ class Backtester:
         # Set model to evaluation mode
         self.model.eval()
 
-        # Detect which device the model is on
-        self.device = next(self.model.parameters()).device
-        logging.info(f"Backtester initialized with model on device: {self.device}")
+        # Use device the model was trained on (imported from train.py)
+        self.device = DEVICE
+        print(f"Backtester initialized with model on device: {self.device}")
 
     def prepare_sequence(self, end_idx):
         """
@@ -118,7 +127,13 @@ class Backtester:
         sequence = self.prepare_sequence(end_idx)
 
         with torch.no_grad():
-            prediction_scaled = self.model(sequence).item()
+            model_output = self.model(sequence)
+
+            # Handle tuple output
+            if isinstance(model_output, tuple):
+                prediction_scaled = model_output[0].item()
+            else:
+                prediction_scaled = model_output.item()
 
         # Inverse transform to get actual price
         # Create dummy array with all features
@@ -155,12 +170,13 @@ class Backtester:
 
         # Step 1: Prepare all sequences
         num_timesteps = end_idx - start_idx
-        logging.info(f"Preparing {num_timesteps} sequences for batch prediction...")
+        print(f"\n{BLUE}Preparing {num_timesteps} sequences for batch prediction...{RESET}")
 
         sequences = []
         failed_indices = []
 
         count=0
+        t0 = time.time()
         for i in range(start_idx, end_idx):
             try:
                 seq = self.prepare_sequence(i)
@@ -168,14 +184,18 @@ class Backtester:
                 count+=1
                 if count%10000 == 0:
                     progress = (count*100)/num_timesteps
-                    logging.info(f"  Processed {count}/{num_timesteps} sequences ({progress:.2f}%)")
+                    print(f"    Processed {count}/{num_timesteps} sequences ({progress:.2f}%)")
             except Exception as e:
                 logging.warning(f"Failed to prepare sequence at index {i}: {e}")
                 sequences.append(None)
                 failed_indices.append(i - start_idx)
 
+        print(f"Time: {time.time() - t0:.2f}s")
+
         # Step 2: Process in batches on GPU
-        logging.info(f"Running batch predictions (batch_size={batch_size})...")
+        t0 = time.time()
+        print(f"\n{BLUE}Running batch predictions (batch_size={batch_size})...{RESET}")
+
         num_batches = (len(sequences) + batch_size - 1) // batch_size
 
         for batch_idx in range(num_batches):
@@ -197,12 +217,19 @@ class Backtester:
                 all_predictions_scaled.extend([0.0] * len(batch_sequences))
                 continue
 
-            # Stack valid sequences into single batch tensor
+            # Stack valid sequences into single batch tensor and move to device
             batch_tensor = torch.cat(valid_sequences, dim=0)  # Shape: (N, window, features)
+            batch_tensor = batch_tensor.to(self.device)
 
             # Predict entire batch at once
             with torch.no_grad():
-                batch_predictions = self.model(batch_tensor)  # Shape: (N,)
+                model_output = self.model(batch_tensor)
+
+                # Handle tuple output (model returns predictions + attention weights)
+                if isinstance(model_output, tuple):
+                    batch_predictions = model_output[0]  # First element is predictions
+                else:
+                    batch_predictions = model_output
 
             # Convert to numpy
             batch_predictions_np = batch_predictions.cpu().numpy()
@@ -222,10 +249,10 @@ class Backtester:
 
             # Progress logging (every 10 batches or at end)
             if batch_idx == num_batches - 1:
-                logging.info(f"  Prepared {num_batches} batches")
+                print(f"    Prepared {num_batches} batches")
 
-        # Step 3: Inverse transform all predictions at once (vectorized - very fast!)
-        logging.info("Inverse scaling predictions to original price units...")
+        # Step 3: Inverse transform all predictions at once (vectorized)
+        print("    Inverse scaling predictions to original price units...")
         predictions_scaled = np.array(all_predictions_scaled)
 
         # Create dummy array with all features
@@ -254,7 +281,8 @@ class Backtester:
                 fallback_price = self.df.iloc[actual_idx]['close']
                 predictions_unscaled[failed_idx] = fallback_price
 
-        logging.info(f"Batch prediction complete: {len(predictions_unscaled)} prices predicted")
+        print(f"    Batch prediction complete: {len(predictions_unscaled)} prices predicted")
+        print(f"Time: {time.time() - t0:.2f}s\n")
 
         return predictions_unscaled
 
@@ -357,10 +385,10 @@ class Backtester:
         if end_idx is None:
             end_idx = len(self.df)
 
-        logging.info(f"Starting backtest from index {start_idx} to {end_idx}")
-        logging.info(f"Initial balance: ${self.initial_balance:,.2f}")
-        logging.info(f"Transaction cost: {self.transaction_cost_pct * 100}%")
-        logging.info(f"Signal threshold: {self.threshold * 100}%")
+        print(f"Starting backtest from index {start_idx} to {end_idx} ({end_idx - start_idx} days)")
+        print(f"Initial balance:        ${self.initial_balance:,.2f}")
+        print(f"Transaction cost:       {self.transaction_cost_pct * 100}%")
+        print(f"Signal threshold:       {self.threshold * 100}%")
 
         # Reset state
         self.cash = self.initial_balance
@@ -378,7 +406,8 @@ class Backtester:
         )
 
         # Now loop through and process signals/trades
-        logging.info("Processing trading signals and executing trades...")
+        t0 = time.time()
+        print(f"{BLUE}Processing trading signals and executing trades...{RESET}")
         num_timesteps = end_idx - start_idx
 
         for idx, i in enumerate(range(start_idx, end_idx)):
@@ -406,28 +435,30 @@ class Backtester:
                 'signal': signal
             })
 
-            # Progress logging every 1k timesteps
+            # Progress logging every 20k timesteps
             if (idx + 1) % 20000 == 0:
                 progress = ((idx + 1) / num_timesteps) * 100
-                logging.info(f"  Processed {idx + 1}/{num_timesteps} timesteps ({progress:.1f}%)")
+                print(f"    Processed {idx + 1}/{num_timesteps} timesteps ({progress:.1f}%)")
+
+        print(f"Time: {time.time() - t0:.2f}s\n")
 
         # Calculate final metrics
-        logging.info("Calculating performance metrics...")
         results = self.calculate_metrics()
 
         # Print summary
-        logging.info(f"\n{'=' * 60}")
-        logging.info("BACKTEST RESULTS")
-        logging.info(f"{'=' * 60}")
-        logging.info(f"Final Portfolio Value: ${results['final_value']:,.2f}")
-        logging.info(f"Total Return: {results['total_return']:.2f}%")
-        logging.info(f"Expected Return (daily): {results['expected_return']:.4f}%")
-        logging.info(f"Sharpe Ratio: {results['sharpe_ratio']:.3f}")
-        logging.info(f"Max Drawdown: {results['max_drawdown']:.2f}%")
-        logging.info(f"Win Rate: {results['win_rate']:.2f}%")
-        logging.info(f"Total Trades: {results['total_trades']}")
-        logging.info(f"Buy & Hold Return: {results['buy_hold_return']:.2f}%")
-        logging.info(f"{'=' * 60}\n")
+        print(f"{BLUE}{'=' * 70}{RESET}")
+        print(f"{BLUE}BACKTEST RESULTS{RESET}")
+        print(f"{BLUE}{'=' * 70}{RESET}")
+        print(f"Final Portfolio Value:    ${results['final_value']:,.2f}")
+        print(f"Total Return:             {results['total_return']:.2f}%")
+        print(f"Expected Return (daily):  {results['expected_return']:.4f}%")
+        print(f"Sharpe Ratio:             {results['sharpe_ratio']:.3f}")
+        print(f"Max Drawdown:             {results['max_drawdown']:.2f}%")
+        print(f"Win Rate:                 {results['win_rate']:.2f}%")
+        print(f"Total Trades:             {results['total_trades']}")
+        print(f"Buy & Hold Return:        {results['buy_hold_return']:.2f}%")
+        print(f"Outperformance:           {results['total_return'] - results['buy_hold_return']:.2f}%")
+        print(f"{BLUE}{'=' * 70}{RESET}\n")
 
         return results
 
@@ -547,8 +578,6 @@ def run_backtest(model, scaler, df, feature_columns, window_size=60,
     )
 
     return backtester.run(start_idx=start_idx, end_idx=end_idx)
-
-
 
 
 # ---------------------------

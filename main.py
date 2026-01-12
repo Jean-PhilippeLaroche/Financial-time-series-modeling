@@ -61,13 +61,15 @@ def main(
     print(f"{BLUE}PIPELINE START - {ticker}{RESET}")
     print(f"{BLUE}{'=' * 70}{RESET}")
 
-    print(f"Window:              {window_size} | Epochs: {epochs} | Threshold: {threshold * 100}%")
-    print(f"Model:               Transformer (d_model: {d_model} | n_head: {nhead} | num_layers: {num_layers})")
+    print(f"Window:                 {window_size} | Epochs: {epochs} | Threshold: {threshold * 100}%")
+    print(f"Model:                  Transformer (d_model: {d_model} | n_head: {nhead} | num_layers: {num_layers})")
 
     if model_interpret:
         print("Model will be interpreted automatically after backtesting")
     if use_adaptive_clipping:
-        print("Adaptive clipping:   ENABLED")
+        print("Adaptive clipping:      ENABLED")
+    else:
+        print("Adaptive clipping:      DISABLED")
 
     # ---- Launch TensorBoard automatically ----
     tb_process = launch_tensorboard(logdir="runs", port=6006)
@@ -104,10 +106,10 @@ def main(
 
     n_total = len(df_tmp)
     split_idx = int(n_total * train_size)
-    print(f"Train/Val split:     {split_idx} / {n_total-split_idx}")
+    print(f"Train/Val split:        {split_idx} / {n_total-split_idx}")
 
     # Step 1 timer
-    print(f"Time:                {time.time() - t0}\n")
+    print(f"Time:                   {time.time() - t0:.2f}s\n")
 
     # ============================================================
     # STEP 2-3: Prepare TRAIN and VAL sequences using prepare_data_for_ai
@@ -116,7 +118,7 @@ def main(
     # ============================================================
     t0 = time.time()
     print(f"{BLUE}{'-' * 70}{RESET}")
-    print(f"{BLUE}[Step 2]: Preparing training sequences{RESET}")
+    print(f"{BLUE}[Step 2] Preparing training sequences{RESET}")
 
     # Using SQLite database if ticker is AAPL or MSFT
     using_sqlite = ticker in ("AAPL", "MSFT")
@@ -136,14 +138,14 @@ def main(
         logging.error("Training data preparation failed. Exiting.")
         return
 
-    print(f"Training sequences:  X_train={X_train.shape}, y_train={y_train.shape}")
+    print(f"Training sequences:     X_train={X_train.shape}, y_train={y_train.shape}")
 
     # Step 2 timer
-    print(f"Time:                {time.time() - t0}\n")
+    print(f"Time:                   {time.time() - t0:.2f}s\n")
 
     t0 = time.time()
     print(f"{BLUE}{'-' * 70}{RESET}")
-    print(f"{BLUE}[Step 3]: Preparing validation sequences{RESET}")
+    print(f"{BLUE}[Step 3] Preparing validation sequences{RESET}")
     X_val, y_val, _ = prepare_data_for_ai(
         ticker,
         data_dir=None,
@@ -159,10 +161,10 @@ def main(
         logging.error("Validation data preparation failed. Exiting.")
         return
 
-    print(f"Validation sequences: X_val={X_val.shape}, y_val={y_val.shape}")
+    print(f"Validation sequences:   X_val={X_val.shape}, y_val={y_val.shape}")
 
     # Step 3 timer
-    print(f"Time:                {time.time() - t0}\n")
+    print(f"Time:                   {time.time() - t0:.2f}s\n")
 
     # ============================================================
     # STEP 4: Start TensorBoard writer and train
@@ -171,7 +173,7 @@ def main(
     writer = get_tensorboard_writer()
 
     print(f"\n{BLUE}{'-' * 70}{RESET}")
-    print(f"{BLUE}[Step 4]: Training Transformer model for {epochs} epochs{RESET}")
+    print(f"{BLUE}[Step 4] Training Transformer model for {epochs} epochs{RESET}")
 
     model = train_model(
         X_train, y_train, X_val, y_val,
@@ -204,7 +206,8 @@ def main(
         logging.warning(f"Failed to close TensorBoard writer: {e}")
 
     # Step 4 timer
-    logging.info(f"\033[91mStep 4: {time.time() - t0}\n\033[0m")
+    print(f"Total training time:   {time.time() - t0:.2f}s | {(time.time() - t0) / 60:.2f}m")
+    print(f"{BLUE}{'=' * 70}{RESET}\n")
 
     # ============================================================
     # STEP 5: Backtest run on validation period
@@ -212,18 +215,18 @@ def main(
     #         Period = [split_idx : n_total]
     # ============================================================
     t0 = time.time()
-    logging.info("Step 5: Running backtest on validation slice of the cleaned dataframe")
+    print(f"{BLUE}{'-' * 70}{RESET}")
+    print(f"{BLUE}[Step 5] Running backtest on validation slice of the dataframe{RESET}")
 
     df_clean = add_indicators(df_raw)
     df_clean = clean_data(df_clean)
 
     feature_columns = ["close", "volume", "RSI", "MACD", "MACD_Signal", "SMA"]
     feature_columns = [c for c in feature_columns if c in df_clean.columns]
-    logging.info(f"Using feature columns: {feature_columns}")
+    print(f"Using feature columns:  {feature_columns}")
 
     val_start_idx = split_idx + window_size
     val_end_idx = n_total
-    logging.info(f"Backtest period: index {val_start_idx} to {val_end_idx} ({val_end_idx - val_start_idx} days)")
 
     backtest_results = run_backtest(
         model=model,
@@ -238,38 +241,46 @@ def main(
         end_idx=val_end_idx
     )
 
-    # Step 5 timer
-    logging.info(f"\033[91mStep 5: {time.time() - t0}\n\033[0m")
+    # Step 5 timer (not displayed because obsolete, custom timers in backtesting.py
+    #logging.info(f"\033[91mStep 5: {time.time() - t0}\n\033[0m")
 
     # ============================================================
-    # STEP 6: Prepare visualization data
+    # STEP 6: Prepare and generate visualization data
     # ============================================================
-    t0 = time.time()
-    logging.info("Step 6: Preparing visualization data")
-    portfolio_history = backtest_results['portfolio_history']
+    if visualize:
+        t0 = time.time()
+        print(f"{BLUE}{'-' * 70}{RESET}")
+        print(f"{BLUE}[Step 6] Generating visualizations{RESET}")
 
-    val_dates = portfolio_history['date'].values
-    actual_prices = portfolio_history['current_price'].values
-    predicted_prices = portfolio_history['predicted_price'].values
+        try:
+            portfolio_history = backtest_results['portfolio_history']
 
-    signal_map = {'BUY': 1, 'HOLD': 0, 'SELL': -1}
-    signals = portfolio_history['signal'].map(signal_map).values
+            signal_map = {'BUY': 1, 'HOLD': 0, 'SELL': -1}
 
-    portfolio_values = portfolio_history['portfolio_value'].values
+            indicators = {}
+            for ind in ["SMA", "RSI", "MACD", "MACD_Signal"]:
+                if ind in df_clean.columns:
+                    indicators[ind] = df_clean[ind].iloc[val_start_idx:val_end_idx].values
 
-    indicators = {}
-    for ind in ["SMA", "RSI", "MACD", "MACD_Signal"]:
-        if ind in df_clean.columns:
-            indicators[ind] = df_clean[ind].iloc[val_start_idx:val_end_idx].values
+            visualize_model_performance(
+                dates=portfolio_history['date'].values,
+                actual_prices=portfolio_history['current_price'].values,
+                predicted_prices=portfolio_history['predicted_price'].values,
+                signals=portfolio_history['signal'].map(signal_map).values,
+                portfolio_values=portfolio_history['portfolio_value'].values,
+                indicators=indicators if indicators else None
+            )
+        except Exception as e:
+            logging.error(f"Visualization failed: {e}")
+            logging.exception("Full traceback:")
 
-    # Step 6 timer
-    logging.info(f"\033[91mStep 6: {time.time() - t0}\n\033[0m")
+        print(f"Time: {time.time() - t0:.2f}s\n")
 
     # ============================================================
     # STEP 7: Save backtest results
     # ============================================================
-    t0 = time.time()
-    logging.info("Step 7: Saving backtest results")
+    print(f"{BLUE}{'-' * 70}{RESET}")
+    print(f"{BLUE}[Step 7] Saving backtest results{RESET}")
     results_summary = {
         'ticker': ticker,
         'window_size': window_size,
@@ -293,70 +304,50 @@ def main(
     results_file = f'backtest_results_{ticker}.json'
     with open(results_file, 'w') as f:
         json.dump(results_summary, f, indent=2)
-    logging.info(f"Results saved to {results_file}")
+    print(f"Results saved to {results_file}")
 
     if len(backtest_results['trades']) > 0:
         trades_file = f'backtest_trades_{ticker}.csv'
         backtest_results['trades'].to_csv(trades_file, index=False)
-        logging.info(f"Trade history saved to {trades_file}")
+        print(f"Trade history saved to {trades_file}\n")
 
-    # Step 7 timer
-    logging.info(f"\033[91mStep 7: {time.time() - t0}\n\033[0m")
-
-    # ============================================================
-    # STEP 8: Visualization
-    # ============================================================
-    t0 = time.time()
-    if visualize:
-        logging.info("Step 8: Generating visualizations")
-        try:
-            visualize_model_performance(
-                dates=val_dates,
-                actual_prices=actual_prices,
-                predicted_prices=predicted_prices,
-                signals=signals,
-                portfolio_values=portfolio_values,
-                indicators=indicators if indicators else None
-            )
-        except Exception as e:
-            logging.error(f"Visualization failed: {e}")
-            logging.exception("Full traceback:")
-
-    # Step 8 timer
-    logging.info(f"\033[91mStep 8: {time.time() - t0}\n\033[0m")
-
-    # ============================================================
-    # STEP 9: Summary + model interpretation if selected
+    # ========================================================
+    # STEP 8: model interpretation if selected
     # ============================================================
     if model_interpret:
         main_interpretation(ticker, train_size, window_size,
                             dim_feedforward, d_model, nhead, num_layers,
                             file="csv", input_size=X_train.shape[2])
 
-    logging.info("\n" + "=" * 70)
-    logging.info("PIPELINE COMPLETE - SUMMARY")
-    logging.info("=" * 70)
-    logging.info(f"Ticker: {ticker}")
-    logging.info(f"Training epochs: {epochs}")
-    logging.info(f"Validation period: {val_end_idx - val_start_idx} days")
-    logging.info(f"-" * 70)
-    logging.info(f"Initial Balance:        ${initial_balance:,.2f}")
-    logging.info(f"Final Portfolio Value:  ${backtest_results['final_value']:,.2f}")
-    logging.info(f"Total Return:           {backtest_results['total_return']:>6.2f}%")
-    logging.info(f"Expected Return (daily):{backtest_results['expected_return']:>6.4f}%")
-    logging.info(f"Buy & Hold Return:      {backtest_results['buy_hold_return']:>6.2f}%")
-    logging.info(f"Outperformance:         {backtest_results['outperformance']:>6.2f}%")
-    logging.info(f"-" * 70)
-    logging.info(f"Sharpe Ratio:           {backtest_results['sharpe_ratio']:>6.3f}")
-    logging.info(f"Max Drawdown:           {backtest_results['max_drawdown']:>6.2f}%")
-    logging.info(f"Win Rate:               {backtest_results['win_rate']:>6.2f}%")
-    logging.info(f"-" * 70)
-    logging.info(f"Total Trades:           {backtest_results['total_trades']}")
-    logging.info(f"Total Fees Paid:        ${backtest_results['total_fees']:,.2f}")
-    logging.info(f"Transaction Cost:       {transaction_cost * 100}%")
-    logging.info("=" * 70 + "\n")
 
-    logging.info("Pipeline finished")
+    # ============================================================
+    # STEP 9: Summary
+    # ============================================================
+
+    print(f"{BLUE}{'=' * 70}{RESET}")
+    print(f"{BLUE}PIPELINE SUMMARY - {ticker}{RESET}")
+    print(f"{BLUE}{'=' * 70}{RESET}")
+    print(f"Ticker:                  {ticker}")
+    print(f"Training epochs:         {epochs}")
+    print(f"Validation period:       {val_end_idx - val_start_idx} days")
+    print(f"{BLUE}{'-' * 70}{RESET}")
+    print(f"Initial Balance:         ${initial_balance:,.2f}")
+    print(f"Final Portfolio Value:   ${backtest_results['final_value']:,.2f}")
+    print(f"Total Return:            {backtest_results['total_return']:>6.2f}%")
+    print(f"Expected Return (daily): {backtest_results['expected_return']:>6.4f}%")
+    print(f"Buy & Hold Return:       {backtest_results['buy_hold_return']:>6.2f}%")
+    print(f"Outperformance:          {backtest_results['outperformance']:>6.2f}%")
+    print(f"{BLUE}{'-' * 70}{RESET}")
+    print(f"Sharpe Ratio:            {backtest_results['sharpe_ratio']:>6.3f}")
+    print(f"Max Drawdown:            {backtest_results['max_drawdown']:>6.2f}%")
+    print(f"Win Rate:                {backtest_results['win_rate']:>6.2f}%")
+    print(f"{BLUE}{'-' * 70}{RESET}")
+    print(f"Total Trades:            {backtest_results['total_trades']}")
+    print(f"Total Fees Paid:         ${backtest_results['total_fees']:,.2f}")
+    print(f"Transaction Cost:        {transaction_cost * 100}%")
+    print(f"{BLUE}{'=' * 70}{RESET}\n")
+
+    print(f"{GREEN}Pipeline finished{RESET}")
 
 
 # ---------------------------

@@ -104,9 +104,13 @@ def init_attention_window(num_layers, n_heads, seq_len, port=8050):
 
     # Run server in background thread
     def run_server():
-        # Silence Flask and Werkzeug logs
-        logging.getLogger('werkzeug').setLevel(logging.ERROR)
-        logging.getLogger('dash').setLevel(logging.ERROR)
+        # Silence werkzeug and dash loggers
+        log = logging.getLogger('werkzeug')
+        log.setLevel(logging.ERROR)
+        log.disabled = True
+
+        # Also silence the root logger for Flask
+        logging.getLogger('dash.dash').setLevel(logging.ERROR)
 
         _app.run(debug=False, port=port, use_reloader=False)
 
@@ -115,6 +119,9 @@ def init_attention_window(num_layers, n_heads, seq_len, port=8050):
 
     # Open browser after short delay
     sleep(1.5)
+
+    print(f"Attention visualization running on Dash at http://127.0.0.1:{port}")
+
     url = f"http://localhost:{port}"
     webbrowser.open(url)
 

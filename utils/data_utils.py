@@ -48,8 +48,8 @@ def load_stock_csv(ticker, data_dir=None):
         return None
 
     df = pd.read_csv(file_path, index_col=0, parse_dates=True)
-    print(f"Rows loaded:         {len(df)}")
-    print(f"Database:            .csv file")
+    print(f"Rows loaded:            {len(df)}")
+    print(f"Database:               .csv file")
 
     # Ensure columns we need exist
     expected_cols = ["open", "high", "low", "close", "volume"]
@@ -118,8 +118,8 @@ def load_stock_sqlite(ticker, db_dir=None):
     # Match CSV loader behavior
     df.set_index("timestamp", inplace=True)
 
-    print(f"Rows loaded:         {len(df)}")
-    print(f"Database:            SQLite")
+    print(f"Rows loaded:            {len(df)}")
+    print(f"Database:               SQLite")
 
     # Ensure columns we need exist
     expected_cols = ["open", "high", "low", "close", "volume"]
@@ -253,7 +253,7 @@ def add_indicators(df, rsi_period=14, macd_fast=12, macd_slow=26, macd_signal=9,
     # SMA
     df["SMA"] = compute_moving_average(df, period=sma_period, column=price_column)
 
-    print(f"Indicators added:    RSI({rsi_period}), MACD({macd_fast},{macd_slow},{macd_signal}), SMA({sma_period})")
+    print(f"Indicators added:       RSI({rsi_period}), MACD({macd_fast},{macd_slow},{macd_signal}), SMA({sma_period})")
     return df
 
 
@@ -273,7 +273,7 @@ def clean_data(df):
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    print(f"Rows after cleaning: {len(df)}")
+    print(f"Rows after cleaning:    {len(df)}")
     return df
 
 
@@ -375,10 +375,10 @@ def prepare_data_for_ai(
         # Training phase: create and fit new scaler
         scaler = MinMaxScaler()
         scaler.fit(df[feature_columns])
-        print("Scaler:              created & fitted")
+        print("Scaler:                 created & fitted")
     else:
         # Validation phase: use existing scaler (no fitting)
-        print("Scaler:              using provided")
+        print("Scaler:                 using provided")
 
     df_scaled = df.copy()
     df_scaled[feature_columns] = scaler.transform(df[feature_columns])

@@ -372,7 +372,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
     if writer is not None:
         init_attention_window(num_layers, nhead, X_train.shape[1])
 
-    logging.info(f"Initialized Transformer with {sum(p.numel() for p in model.parameters()):,} parameters")
+    print(f"Initialized Transformer with {sum(p.numel() for p in model.parameters()):,} parameters")
 
     criterion = nn.MSELoss()
 
@@ -566,6 +566,8 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
             writer.add_scalar('Gradients/avg_clip_value', avg_clip_value, epoch)
             writer.add_scalar('Gradients/clip_rate', clip_rate, epoch)
 
+            writer.flush() # Ensures data is written immediately
+
             # Colors
             YELLOW = "\033[93m"
             GREEN = "\033[92m"
@@ -631,7 +633,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         print(f"    Optimizer:           {ep_optimizer:>6.2f}s ({ep_optimizer / total_train * 100:>5.1f}%)")
         print(f"    Other:               {ep_other:>6.2f}s ({ep_other / total_train * 100:>5.1f}%)")
         print(f"  Validation Loop:   {val_loop_times[-1]:.3f}s")
-        print(f"  Total:             {epoch_times[epoch-1]:.3f}s")
+        print(f"  Total:             {epoch_times[epoch-1]:.3f}s | {(epoch_times[epoch-1]) / 60:.2f}m")
 
         if avg_val_loss < best_val_loss:
             print(f"{GREEN}  Loss:              {avg_train_loss:.6f} (train), {avg_val_loss:.6f} (val){RESET}")
@@ -671,7 +673,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
     print(f"Train loop avg:        {np.mean(train_loop_times):.3f}s")
     print(f"Val loop avg:          {np.mean(val_loop_times):.3f}s")
 
-    print("\n--- Batch timings ---")
+    print(f"{BLUE}\n--- Batch timings ---{RESET}")
     print(f"Avg batch load:        {np.mean(batch_load_times):.6f}s")
     print(f"Avg forward pass:      {np.mean(forward_times):.6f}s")
     print(f"Avg backward pass:     {np.mean(backward_times):.6f}s")
