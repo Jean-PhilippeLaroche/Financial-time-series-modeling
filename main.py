@@ -49,17 +49,29 @@ def main(
         use_adaptive_clipping=True
 ):
 
+    # Colors
+    YELLOW = "\033[93m"
+    GREEN = "\033[92m"
+    BLUE = "\033[94m"
+    RED = "\033[91m"
+    RESET = "\033[0m"
 
-    logging.info(f"Starting pipeline for {ticker}")
-    logging.info(f"Configuration: window={window_size}, epochs={epochs}, threshold={threshold * 100}%")
-    logging.info(f"Transformer config: d_model={d_model}, nhead={nhead}, num_layers={num_layers}")
+    # Console outputs
+    print(f"\n{BLUE}{'=' * 70}{RESET}")
+    print(f"{BLUE}PIPELINE START - {ticker}{RESET}")
+    print(f"{BLUE}{'=' * 70}{RESET}")
+
+    print(f"Window:              {window_size} | Epochs: {epochs} | Threshold: {threshold * 100}%")
+    print(f"Model:               Transformer (d_model: {d_model} | n_head: {nhead} | num_layers: {num_layers})")
+
     if model_interpret:
-        logging.info("Model will be interpreted automatically after backtesting")
+        print("Model will be interpreted automatically after backtesting")
     if use_adaptive_clipping:
-        logging.info("Using adaptive clipping")
+        print("Adaptive clipping:   ENABLED")
 
     # ---- Launch TensorBoard automatically ----
     tb_process = launch_tensorboard(logdir="runs", port=6006)
+
 
     # Register cleanup for TensorBoard
     if tb_process:
@@ -69,11 +81,13 @@ def main(
 
         atexit.register(cleanup_tensorboard)
 
+
     # ============================================================
     # STEP 1: Load temp df for correct split_idx and end_idx indexes
     # ============================================================
     t0 = time.time()
-    logging.info("Step 1: Loading and preparing full dataframe")
+    print(f"\n{BLUE}{'-' * 70}{RESET}")
+    print(f"{BLUE}[Step 1] Full Data Preparation{RESET}")
 
     # Using SQLite database if ticker is AAPL or MSFT
     if ticker in ("AAPL", "MSFT"):
@@ -90,10 +104,10 @@ def main(
 
     n_total = len(df_tmp)
     split_idx = int(n_total * train_size)
-    logging.info(f"Total cleaned rows: {n_total}, train/val split index: {split_idx}")
+    print(f"Train/Val split:     {split_idx} / {n_total-split_idx}")
 
     # Step 1 timer
-    logging.info(f"\033[91mStep 1: {time.time() - t0}\n\033[0m")
+    print(f"Time:                {time.time() - t0}\n")
 
     # ============================================================
     # STEP 2-3: Prepare TRAIN and VAL sequences using prepare_data_for_ai
@@ -101,7 +115,8 @@ def main(
     #         Val:   [split_idx : n_total]
     # ============================================================
     t0 = time.time()
-    logging.info("Step 2: Preparing training sequences")
+    print(f"{BLUE}{'-' * 70}{RESET}")
+    print(f"{BLUE}[Step 2]: Preparing training sequences{RESET}")
 
     # Using SQLite database if ticker is AAPL or MSFT
     using_sqlite = ticker in ("AAPL", "MSFT")
@@ -121,13 +136,14 @@ def main(
         logging.error("Training data preparation failed. Exiting.")
         return
 
-    logging.info(f"Training sequences: X_train={X_train.shape}, y_train={y_train.shape}")
+    print(f"Training sequences:  X_train={X_train.shape}, y_train={y_train.shape}")
 
     # Step 2 timer
-    logging.info(f"\033[91mStep 2: {time.time() - t0}\n\033[0m")
+    print(f"Time:                {time.time() - t0}\n")
 
     t0 = time.time()
-    logging.info("Step 3: Preparing validation sequences")
+    print(f"{BLUE}{'-' * 70}{RESET}")
+    print(f"{BLUE}[Step 3]: Preparing validation sequences{RESET}")
     X_val, y_val, _ = prepare_data_for_ai(
         ticker,
         data_dir=None,
@@ -143,10 +159,10 @@ def main(
         logging.error("Validation data preparation failed. Exiting.")
         return
 
-    logging.info(f"Validation sequences: X_val={X_val.shape}, y_val={y_val.shape}")
+    print(f"Validation sequences: X_val={X_val.shape}, y_val={y_val.shape}")
 
     # Step 3 timer
-    logging.info(f"\033[91mStep 3: {time.time() - t0}\n\033[0m")
+    print(f"Time:                {time.time() - t0}\n")
 
     # ============================================================
     # STEP 4: Start TensorBoard writer and train
@@ -154,7 +170,9 @@ def main(
     t0 = time.time()
     writer = get_tensorboard_writer()
 
-    logging.info(f"Step 4: Training Transformer model for {epochs} epochs")
+    print(f"\n{BLUE}{'-' * 70}{RESET}")
+    print(f"{BLUE}[Step 4]: Training Transformer model for {epochs} epochs{RESET}")
+
     model = train_model(
         X_train, y_train, X_val, y_val,
         input_size=X_train.shape[2],

@@ -48,7 +48,8 @@ def load_stock_csv(ticker, data_dir=None):
         return None
 
     df = pd.read_csv(file_path, index_col=0, parse_dates=True)
-    logging.info(f"Loaded {len(df)} rows for {ticker} from {ticker}.csv")
+    print(f"Rows loaded:         {len(df)}")
+    print(f"Database:            .csv file")
 
     # Ensure columns we need exist
     expected_cols = ["open", "high", "low", "close", "volume"]
@@ -117,7 +118,8 @@ def load_stock_sqlite(ticker, db_dir=None):
     # Match CSV loader behavior
     df.set_index("timestamp", inplace=True)
 
-    logging.info(f"Loaded {len(df)} rows for {ticker} from SQLite database")
+    print(f"Rows loaded:         {len(df)}")
+    print(f"Database:            SQLite")
 
     # Ensure columns we need exist
     expected_cols = ["open", "high", "low", "close", "volume"]
@@ -251,7 +253,7 @@ def add_indicators(df, rsi_period=14, macd_fast=12, macd_slow=26, macd_signal=9,
     # SMA
     df["SMA"] = compute_moving_average(df, period=sma_period, column=price_column)
 
-    logging.info(f"Indicators added: RSI({rsi_period}), MACD({macd_fast},{macd_slow},{macd_signal}), SMA({sma_period})")
+    print(f"Indicators added:    RSI({rsi_period}), MACD({macd_fast},{macd_slow},{macd_signal}), SMA({sma_period})")
     return df
 
 
@@ -271,7 +273,7 @@ def clean_data(df):
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    logging.info(f"Data cleaned: {len(df)} rows remain after cleaning")
+    print(f"Rows after cleaning: {len(df)}")
     return df
 
 
@@ -309,7 +311,6 @@ def create_sequences(df, feature_columns, target_column="close", window_size=20)
     X = np.array(X)
     y = np.array(y)
 
-    logging.info(f"Created sequences: X={X.shape}, y={y.shape}")
     return X, y
 
 def prepare_data_for_ai(
@@ -374,10 +375,10 @@ def prepare_data_for_ai(
         # Training phase: create and fit new scaler
         scaler = MinMaxScaler()
         scaler.fit(df[feature_columns])
-        logging.info("Created and fitted new scaler")
+        print("Scaler:              created & fitted")
     else:
         # Validation phase: use existing scaler (no fitting)
-        logging.info("Using provided scaler")
+        print("Scaler:              using provided")
 
     df_scaled = df.copy()
     df_scaled[feature_columns] = scaler.transform(df[feature_columns])
@@ -387,7 +388,7 @@ def prepare_data_for_ai(
                             target_column=target_column,
                             window_size=window_size)
 
-    logging.info(f"Prepared {X.shape[0]} sequences for {ticker}")
+    print(f"Fully prepared {X.shape[0]} sequences for {ticker}")
     return X, y, scaler
 
 

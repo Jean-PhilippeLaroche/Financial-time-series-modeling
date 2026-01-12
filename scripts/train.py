@@ -148,7 +148,15 @@ logging.basicConfig(
 # -----------------------------
 # Use GPU if available (important for training speed, on CPU it's basically impossible)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-logging.info(f"Using device: {DEVICE}")
+
+# Colors for console outputs
+YELLOW = "\033[93m"
+GREEN = "\033[92m"
+BLUE = "\033[94m"
+RED = "\033[91m"
+RESET = "\033[0m"
+
+logging.info(f"{GREEN}Using device: {DEVICE}{RESET}")
 
 
 # -----------------------------
@@ -411,7 +419,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
 
     print(f"\n{BLUE}{'=' * 70}{RESET}")
     print(f"{BLUE}TRAINING PROFILER{RESET}")
-    print(f"{BLUE}{'=' * 70}{RESET}")
+    print(f"{BLUE}{'=' * 70}{RESET}\n")
 
     for epoch in range(1, epochs + 1):
         epoch_start = time.time()
@@ -529,6 +537,11 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         if writer is not None:
             update_attention_window(mean_attn, epoch)
 
+        # First console outputs
+        print(f"\n{BLUE}{'=' * 70}{RESET}")
+        print(f"{BLUE}EPOCH {epoch} / {epochs}{RESET}")
+        print(f"{BLUE}{'=' * 70}{RESET}")
+
         # --------------------------
         # TENSORBOARD LOGGING
         # --------------------------
@@ -636,10 +649,10 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
             epochs_without_improvement = 0
         else:
             epochs_without_improvement += 1
-            print(f"Epochs without improvement: {epochs_without_improvement}")
+            logging.info(f"{RED}Epochs without improvement: {epochs_without_improvement}{RESET}")
             if epochs_without_improvement >= early_stopping_patience:
                 logging.info(
-                    f"\nEarly stopping triggered after {epochs_without_improvement} epochs without improvement")
+                    f"\n{RED}Early stopping triggered after {epochs_without_improvement} epochs without improvement{RESET}")
                 break
 
     # --------------------------
