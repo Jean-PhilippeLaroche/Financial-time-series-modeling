@@ -39,6 +39,10 @@ from utils.activation_health_check import (
     check_activation_health,
     log_activation_health_to_tensorboard
 )
+from utils.embeddings_visualization import (
+    log_embeddings_to_tensorboard,
+    log_multiple_embedding_views
+)
 
 
 def log_activations_to_tensorboard(writer, activations, epoch):
@@ -565,6 +569,19 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
 
             writer.add_scalar('Gradients/avg_clip_value', avg_clip_value, epoch)
             writer.add_scalar('Gradients/clip_rate', clip_rate, epoch)
+
+            # Log embeddings every 5 epochs
+            if epoch % 5 == 0:
+                print(f"  Logging embeddings to TensorBoard...")
+                log_embeddings_to_tensorboard(
+                    writer=writer,
+                    model=model,
+                    data_loader=val_loader,
+                    epoch=epoch,
+                    max_samples=1000,
+                    metadata_type='price_change',
+                    device=DEVICE
+                )
 
             writer.flush() # Ensures data is written immediately
 
