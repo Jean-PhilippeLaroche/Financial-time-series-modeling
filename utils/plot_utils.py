@@ -1,175 +1,515 @@
-import matplotlib.pyplot as plt
+import dash
+from dash import dcc, html
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import numpy as np
-import pandas as pd
+import webbrowser
+import threading
+from time import sleep
+import logging
+import os
 
-def plot_price_vs_prediction(dates, actual, predicted, title="Price vs Prediction"):
+# Global state
+_app = None
+_server_thread = None
+_initialized = False
+
+
+def create_backtest_dashboard(dates, actual_prices, predicted_prices, signals,
+                              portfolio_values, indicators=None, returns=None,
+                              ticker="Stock", port=8051):
     """
-    Plot actual stock prices vs model predictions.
+    Create and launch an interactive dashboard showing all backtest results.
 
     Args:
-        dates (array-like): list/array of dates (x-axis)
-        actual (array-like): actual stock prices
-        predicted (array-like): predicted stock prices
-        title (str): chart title
+        dates: Array of dates
+        actual_prices: Actual stock prices
+        predicted_prices: Model predictions
+        signals: Trading signals (1=Buy, -1=Sell, 0=Hold)
+        portfolio_values: Portfolio equity over time
+        indicators: Dict of indicator name -> values (optional)
+        returns: Daily returns for histogram (optional)
+        ticker: Stock ticker symbol
+        port: Port for dashboard (default: 8051)
     """
-    plt.figure(figsize=(12, 6))
-    plt.plot(dates, actual, label="Actual", color="blue", linewidth=2)
-    plt.plot(dates, predicted, label="Predicted", color="orange", linestyle="--", linewidth=2)
-    plt.xlabel("Date")
-    plt.ylabel("Price")
-    plt.title(title)
-    plt.legend()
-    plt.grid(True, alpha=0.3)
+    global _app, _server_thread, _initialized
 
-    print("Plotted actual stock prices vs model predictions")
+    if _initialized:
+        print("Dashboard already running")
+        return
+
+    # Create Dash app
+    _app = dash.Dash(__name__)
+
+    # Create all figures
+    fig_price_pred = create_price_prediction_plot(dates, actual_prices, predicted_prices)
+    fig_signals = create_signals_plot(dates, actual_prices, signals)
+    fig_portfolio = create_portfolio_plot(dates, portfolio_values)
+    fig_indicators = create_indicators_plot(dates, actual_prices, indicators) if indicators else None
+    fig_returns = create_returns_histogram(returns) if returns is not None else None
+
+    # Build layout
+    charts = [
+        html.H1(f"{ticker} Backtest Results", style={'textAlign': 'center', 'marginBottom': 30}),
+
+        html.Div([
+            html.H3("Price vs Prediction", style={'textAlign': 'center'}),
+            dcc.Graph(figure=fig_price_pred, style={'height': '400px'}),
+        ], style={'marginBottom': 40}),
+
+        html.Div([
+            html.H3("Trading Signals", style={'textAlign': 'center'}),
+            dcc.Graph(figure=fig_signals, style={'height': '400px'}),
+        ], style={'marginBottom': 40}),
+
+        html.Div([
+            html.H3("Portfolio Equity Curve", style={'textAlign': 'center'}),
+            dcc.Graph(figure=fig_portfolio, style={'height': '400px'}),
+        ], style={'marginBottom': 40}),
+    ]
+
+    # Add indicators plot if available
+    if fig_indicators:
+        charts.append(html.Div([
+            html.H3("Technical Indicators", style={'textAlign': 'center'}),
+            dcc.Graph(figure=fig_indicators, style={'height': '400px'}),
+        ], style={'marginBottom': 40}))
+
+    # Add returns histogram if available
+    if fig_returns:
+        charts.append(html.Div([
+            html.H3("Daily Returns Distribution", style={'textAlign': 'center'}),
+            dcc.Graph(figure=fig_returns, style={'height': '400px'}),
+        ], style={'marginBottom': 40}))
+
+    _app.layout = html.Div(charts, style={
+        'maxWidth': '1400px',
+        'margin': '0 auto',
+        'padding': '20px',
+        'fontFamily': 'Arial, sans-serif'
+    })
+
+    # Run server in background
+    def run_server():
+        logging.getLogger('werkzeug').setLevel(logging.ERROR)
+        logging.getLogger('werkzeug').disabled = True
+        logging.getLogger('dash').setLevel(logging.ERROR)
+        _app.run(debug=False, port=port, use_reloader=False)
+
+    _server_thread = threading.Thread(target=run_server, daemon=True)
+    _server_thread.start()
+
+    sleep(1.5)
+    url = f"http://127.0.0.1:{port}"
+    webbrowser.open(url)
+
+    _initialized = True
+    print(f"\nBacktest dashboard opened at {url}")
+    print("  Press Ctrl+C to stop the training script when done viewing\n")
 
 
-def plot_signals(dates, prices, signals, title="Trading Signals"):
-    """
-    Plot stock prices with buy/sell signals.
+def create_price_prediction_plot(dates, actual, predicted):
+    """Create price vs prediction plot."""
+    fig = go.Figure()
 
-    Args:
-        dates (array-like): list/array of dates
-        prices (array-like): stock prices
-        signals (array-like): 1 for Buy, -1 for Sell, 0 for Hold
-        title (str): chart title
-    """
-    plt.figure(figsize=(12, 6))
-    plt.plot(dates, prices, label="Price", color="blue", linewidth=2)
+    fig.add_trace(go.Scatter(
+        x=dates,
+        y=actual,
+        mode='lines',
+        name='Actual',
+        line=dict(color='blue', width=2)
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=dates,
+        y=predicted,
+        mode='lines',
+        name='Predicted',
+        line=dict(color='orange', width=2, dash='dash')
+    ))
+
+    fig.update_layout(
+        xaxis_title="Date",
+        yaxis_title="Price",
+        hovermode='x unified',
+        legend=dict(x=0, y=1),
+        margin=dict(l=50, r=50, t=30, b=50)
+    )
+
+    return fig
+
+
+def create_signals_plot(dates, prices, signals):
+    """Create trading signals plot."""
+    fig = go.Figure()
+
+    # Price line
+    fig.add_trace(go.Scatter(
+        x=dates,
+        y=prices,
+        mode='lines',
+        name='Price',
+        line=dict(color='blue', width=2)
+    ))
 
     # Buy signals
-    buy_signals = np.where(signals == 1)[0]
-    plt.scatter(
-        np.array(dates)[buy_signals],
-        np.array(prices)[buy_signals],
-        label="Buy",
-        marker="^",
-        color="green",
-        s=100
-    )
+    buy_mask = signals == 1
+    if np.any(buy_mask):
+        fig.add_trace(go.Scatter(
+            x=dates[buy_mask],
+            y=prices[buy_mask],
+            mode='markers',
+            name='Buy',
+            marker=dict(symbol='triangle-up', size=12, color='green')
+        ))
 
     # Sell signals
-    sell_signals = np.where(signals == -1)[0]
-    plt.scatter(
-        np.array(dates)[sell_signals],
-        np.array(prices)[sell_signals],
-        label="Sell",
-        marker="v",
-        color="red",
-        s=100
+    sell_mask = signals == -1
+    if np.any(sell_mask):
+        fig.add_trace(go.Scatter(
+            x=dates[sell_mask],
+            y=prices[sell_mask],
+            mode='markers',
+            name='Sell',
+            marker=dict(symbol='triangle-down', size=12, color='red')
+        ))
+
+    fig.update_layout(
+        xaxis_title="Date",
+        yaxis_title="Price",
+        hovermode='x unified',
+        legend=dict(x=0, y=1),
+        margin=dict(l=50, r=50, t=30, b=50)
     )
 
-    plt.xlabel("Date")
-    plt.ylabel("Price")
-    plt.title(title)
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-
-    print("Plotted trading signals")
+    return fig
 
 
-def plot_portfolio_equity(portfolio_values, dates=None):
+def create_portfolio_plot(dates, portfolio_values):
+    """Create portfolio equity curve."""
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=dates,
+        y=portfolio_values,
+        mode='lines',
+        name='Portfolio Value',
+        line=dict(color='blue', width=2),
+        fill='tozeroy',
+        fillcolor='rgba(0, 100, 255, 0.2)'
+    ))
+
+    fig.update_layout(
+        xaxis_title="Date",
+        yaxis_title="Portfolio Value ($)",
+        hovermode='x unified',
+        margin=dict(l=50, r=50, t=30, b=50)
+    )
+
+    return fig
+
+
+def create_indicators_plot(dates, prices, indicators_dict):
+    """Create indicators overlay plot."""
+    fig = go.Figure()
+
+    # Price
+    fig.add_trace(go.Scatter(
+        x=dates,
+        y=prices,
+        mode='lines',
+        name='Price',
+        line=dict(color='black', width=2)
+    ))
+
+    # Indicators
+    colors = ['red', 'green', 'purple', 'orange', 'brown']
+    for idx, (name, values) in enumerate(indicators_dict.items()):
+        fig.add_trace(go.Scatter(
+            x=dates,
+            y=values,
+            mode='lines',
+            name=name,
+            line=dict(color=colors[idx % len(colors)], width=1.5)
+        ))
+
+    fig.update_layout(
+        xaxis_title="Date",
+        yaxis_title="Value",
+        hovermode='x unified',
+        legend=dict(x=0, y=1),
+        margin=dict(l=50, r=50, t=30, b=50)
+    )
+
+    return fig
+
+
+def create_returns_histogram(returns):
+    """Create histogram of returns."""
+    fig = go.Figure()
+
+    fig.add_trace(go.Histogram(
+        x=returns,
+        nbinsx=50,
+        marker=dict(color='skyblue', line=dict(color='black', width=1))
+    ))
+
+    fig.update_layout(
+        xaxis_title="Return",
+        yaxis_title="Frequency",
+        bargap=0.1,
+        margin=dict(l=50, r=50, t=30, b=50)
+    )
+
+    return fig
+
+
+def visualize_model_performance(dates, actual_prices, predicted_prices, signals,
+                                portfolio_values, indicators=None, ticker="Stock"):
     """
-    Plot the portfolio equity curve over time.
+    Drop-in replacement for the old matplotlib visualization function.
 
     Args:
-        portfolio_values (list or np.array): portfolio value at each timestep
-        dates (list or np.array): optional dates for x-axis
+        dates: Array of dates
+        actual_prices: Actual stock prices
+        predicted_prices: Model predictions
+        signals: Trading signals (1=Buy, -1=Sell, 0=Hold)
+        portfolio_values: Portfolio equity over time
+        indicators: Dict of indicator name -> values (optional)
+        ticker: Stock ticker symbol
     """
-    plt.figure(figsize=(12, 6))
-    if dates is None:
-        dates = np.arange(len(portfolio_values))
-    plt.plot(dates, portfolio_values, label="Portfolio Equity", color="blue")
-    plt.xlabel("Date")
-    plt.ylabel("Portfolio Value")
-    plt.title("Portfolio Equity Curve")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
+    # Calculate returns for histogram
+    returns = np.diff(portfolio_values) / portfolio_values[:-1]
 
-    print("Plotted portfolio equity curve")
-
-
-def plot_indicator_overlay(prices, indicators_dict, dates=None):
-    """
-    Plot stock prices with multiple indicators overlaid.
-
-    Args:
-        prices (list or np.array): stock prices
-        indicators_dict (dict): key=name of indicator, value=np.array of indicator values
-        dates (list or np.array): optional dates for x-axis
-    """
-    plt.figure(figsize=(6, 4))
-    if dates is None:
-        dates = np.arange(len(prices))
-    plt.plot(dates, prices, label="Price", color="black")
-    for name, values in indicators_dict.items():
-        plt.plot(dates, values, label=name)
-    plt.xlabel("Date")
-    plt.ylabel("Value")
-    plt.title("Price with Indicator Overlays")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-
-    print("Plotted indicator overlays")
+    create_backtest_dashboard(
+        dates=dates,
+        actual_prices=actual_prices,
+        predicted_prices=predicted_prices,
+        signals=signals,
+        portfolio_values=portfolio_values,
+        indicators=indicators,
+        returns=returns,
+        ticker=ticker,
+        port=8051
+    )
 
 
-def plot_return_distribution(returns, bins=50):
-    """
-    Plot histogram of daily returns.
-
-    Args:
-        returns (list or np.array): daily returns, can be log or simple returns
-        bins (int): number of bins in histogram
-    """
-    plt.figure(figsize=(6, 4))
-    plt.hist(returns, bins=bins, color="skyblue", edgecolor="black")
-    plt.xlabel("Return")
-    plt.ylabel("Frequency")
-    plt.title("Histogram of Daily Returns")
-    plt.grid(True)
-    plt.tight_layout()
-
-    print("Plotted histogram of daily returns")
-
-
-# ------------------
-# CLI
-# ------------------
 if __name__ == "__main__":
+    """
+    Run tests when this file is executed directly.
 
-    # Generate fake data for testing
-    rng = pd.date_range("2023-01-01", periods=50, freq="D")
-    actual_prices = np.linspace(100, 120, 50) + np.random.normal(0, 1, 50)
-    predicted_prices = actual_prices + np.random.normal(0, 2, 50)
+    Usage:
+        python backtest_dashboard.py          # Run unit tests only
+        python backtest_dashboard.py --live   # Launch interactive test
+    """
+    import sys
 
-    # Create fake trading signals
-    signals = np.zeros(50)
-    signals[10] = 1   # Buy at day 10
-    signals[25] = -1  # Sell at day 25
-    signals[40] = 1   # Buy at day 40
 
-    # Test first 2 functions
-    plot_signals(rng, actual_prices, signals)
-    plot_price_vs_prediction(rng, actual_prices, predicted_prices)
+    def run_unit_tests():
+        """
+        Run unit tests to verify dashboard components work correctly.
+        Use this to debug issues or verify after making changes.
+        """
+        print("\n" + "=" * 70)
+        print("RUNNING BACKTEST DASHBOARD UNIT TESTS")
+        print("=" * 70 + "\n")
 
-    # Portfolio equity curve
-    portfolio_values = np.cumsum(np.random.randn(50)) + 1000
-    plot_portfolio_equity(portfolio_values)
+        passed = 0
+        failed = 0
 
-    # Indicator overlay
-    sma = np.convolve(actual_prices, np.ones(5)/5, mode='valid')
-    rsi = np.random.rand(50) * 100
-    indicators = {
-        "SMA": np.pad(sma, (len(actual_prices)-len(sma), 0), 'constant', constant_values=np.nan),
-        "RSI": rsi
-    }
-    plot_indicator_overlay(actual_prices, indicators)
+        # Test 1: Create synthetic data
+        print("[Test 1] Creating synthetic test data...")
+        try:
+            n_points = 100
+            dates = np.arange(n_points)
+            actual_prices = 100 + np.cumsum(np.random.randn(n_points) * 2)
+            predicted_prices = actual_prices + np.random.randn(n_points) * 5
+            signals = np.random.choice([1, 0, -1], n_points, p=[0.2, 0.6, 0.2])
+            portfolio_values = 10000 + np.cumsum(np.random.randn(n_points) * 100)
 
-    # Return distribution
-    returns = np.diff(actual_prices) / actual_prices[:-1]
-    plot_return_distribution(returns)
+            assert len(dates) == n_points
+            assert len(actual_prices) == n_points
+            assert len(predicted_prices) == n_points
+            assert len(signals) == n_points
+            assert len(portfolio_values) == n_points
 
-    # Show everything at once
-    plt.show()
+            print("Synthetic data created successfully")
+            passed += 1
+        except Exception as e:
+            print(f"Failed: {e}")
+            failed += 1
+            return
+
+        # Test 2: Create price prediction plot
+        print("[Test 2] Testing price prediction plot creation...")
+        try:
+            fig = create_price_prediction_plot(dates, actual_prices, predicted_prices)
+            assert fig is not None
+            assert len(fig.data) == 2  # Should have 2 traces (actual + predicted)
+            assert fig.data[0].name == 'Actual'
+            assert fig.data[1].name == 'Predicted'
+            print("Price prediction plot created successfully")
+            passed += 1
+        except Exception as e:
+            print(f"Failed: {e}")
+            failed += 1
+
+        # Test 3: Create signals plot
+        print("[Test 3] Testing signals plot creation...")
+        try:
+            fig = create_signals_plot(dates, actual_prices, signals)
+            assert fig is not None
+            assert len(fig.data) >= 1  # At least price line
+            print(f"Signals plot created successfully ({len(fig.data)} traces)")
+            passed += 1
+        except Exception as e:
+            print(f"Failed: {e}")
+            failed += 1
+
+        # Test 4: Create portfolio plot
+        print("[Test 4] Testing portfolio equity plot creation...")
+        try:
+            fig = create_portfolio_plot(dates, portfolio_values)
+            assert fig is not None
+            assert len(fig.data) == 1
+            assert fig.data[0].name == 'Portfolio Value'
+            print("Portfolio plot created successfully")
+            passed += 1
+        except Exception as e:
+            print(f"Failed: {e}")
+            failed += 1
+
+        # Test 5: Create indicators plot
+        print("[Test 5] Testing indicators plot creation...")
+        try:
+            indicators = {
+                'SMA': np.convolve(actual_prices, np.ones(10) / 10, mode='same'),
+                'RSI': 50 + np.random.randn(n_points) * 10,
+                'MACD': np.random.randn(n_points) * 2
+            }
+            fig = create_indicators_plot(dates, actual_prices, indicators)
+            assert fig is not None
+            assert len(fig.data) == 4  # Price + 3 indicators
+            print("Indicators plot created successfully")
+            passed += 1
+        except Exception as e:
+            print(f"Failed: {e}")
+            failed += 1
+
+        # Test 6: Create returns histogram
+        print("[Test 6] Testing returns histogram creation...")
+        try:
+            returns = np.diff(portfolio_values) / portfolio_values[:-1]
+            fig = create_returns_histogram(returns)
+            assert fig is not None
+            assert len(fig.data) == 1
+            print("Returns histogram created successfully")
+            passed += 1
+        except Exception as e:
+            print(f"Failed: {e}")
+            failed += 1
+
+        # Test 7: Test with edge cases
+        print("[Test 7] Testing edge cases...")
+        try:
+            # All hold signals
+            signals_hold = np.zeros(n_points)
+            fig = create_signals_plot(dates, actual_prices, signals_hold)
+            assert fig is not None
+
+            # Empty indicators
+            fig = create_indicators_plot(dates, actual_prices, {})
+            assert fig is not None
+
+            # Very small dataset
+            small_dates = np.arange(5)
+            small_prices = np.array([100, 101, 99, 102, 98])
+            fig = create_price_prediction_plot(small_dates, small_prices, small_prices)
+            assert fig is not None
+
+            print("Edge cases handled successfully")
+            passed += 1
+        except Exception as e:
+            print(f"Failed: {e}")
+            failed += 1
+
+        # Test 8: Test data validation
+        print("[Test 8] Testing data validation...")
+        try:
+            # Mismatched lengths should be caught by numpy operations
+            try:
+                bad_dates = np.arange(50)  # Wrong length
+                fig = create_price_prediction_plot(bad_dates, actual_prices, predicted_prices)
+                print("Failed: Should have raised error for mismatched lengths")
+                failed += 1
+            except (ValueError, IndexError):
+                print("Data validation working correctly")
+                passed += 1
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            failed += 1
+
+        # Summary
+        print("\n" + "=" * 70)
+        print(f"TEST RESULTS: {passed} passed, {failed} failed")
+        print("=" * 70 + "\n")
+
+        if failed == 0:
+            print("All tests passed! Dashboard is working correctly.\n")
+        else:
+            print(f"{failed} test(s) failed. Check error messages above.\n")
+
+        return passed, failed
+
+
+    def test_dashboard_launch():
+        """
+        Interactive test: Launch dashboard with synthetic data.
+        Run this to verify the dashboard opens correctly in browser.
+        """
+        print("\n" + "=" * 70)
+        print("INTERACTIVE DASHBOARD TEST")
+        print("=" * 70)
+        print("\nLaunching dashboard with synthetic data...")
+        print("The dashboard should open in your browser automatically.")
+        print("Press Ctrl+C in terminal to stop.\n")
+
+        # Create synthetic data
+        n_points = 200
+        dates = np.arange(n_points)
+        actual_prices = 100 + np.cumsum(np.random.randn(n_points) * 2)
+        predicted_prices = actual_prices + np.random.randn(n_points) * 3
+        signals = np.random.choice([1, 0, -1], n_points, p=[0.15, 0.7, 0.15])
+        portfolio_values = 10000 + np.cumsum(np.random.randn(n_points) * 150)
+
+        indicators = {
+            'SMA': np.convolve(actual_prices, np.ones(20) / 20, mode='same'),
+            'RSI': 50 + np.random.randn(n_points) * 15,
+            'MACD': np.random.randn(n_points) * 3
+        }
+
+        visualize_model_performance(
+            dates=dates,
+            actual_prices=actual_prices,
+            predicted_prices=predicted_prices,
+            signals=signals,
+            portfolio_values=portfolio_values,
+            indicators=indicators,
+            ticker="TEST"
+        )
+
+        print("Dashboard should now be running at http://127.0.0.1:8051")
+        print("Verify all 5 charts are visible and interactive.")
+
+        try:
+            input("\nPress Enter to continue (or Ctrl+C to exit)...")
+        except KeyboardInterrupt:
+            print("\n\nTest interrupted by user.")
+
+    if len(sys.argv) > 1 and sys.argv[1] == '--live':
+        # Run interactive test
+        test_dashboard_launch()
+    else:
+        # Run unit tests
+        passed, failed = run_unit_tests()
+        sys.exit(0 if failed == 0 else 1)

@@ -8,8 +8,8 @@ from utils.data_utils import (
     add_indicators,
     clean_data, load_stock_sqlite
 )
+from utils.plot_utils import visualize_model_performance
 from scripts.train import train_model, get_tensorboard_writer, launch_tensorboard
-from scripts.evaluate import visualize_model_performance
 from scripts.backtest import run_backtest
 import time
 
@@ -268,7 +268,8 @@ def main(
                 predicted_prices=portfolio_history['predicted_price'].values,
                 signals=portfolio_history['signal'].map(signal_map).values,
                 portfolio_values=portfolio_history['portfolio_value'].values,
-                indicators=indicators if indicators else None
+                indicators=indicators if indicators else None,
+                ticker=ticker
             )
         except Exception as e:
             logging.error(f"Visualization failed: {e}")
@@ -347,7 +348,11 @@ def main(
     print(f"Transaction Cost:        {transaction_cost * 100}%")
     print(f"{BLUE}{'=' * 70}{RESET}\n")
 
-    print(f"{GREEN}Pipeline finished{RESET}")
+    print(f"{GREEN}Pipeline finished. Press CTRL+C to exit.{RESET}")
+
+    # Keeping everything alive until manual stop
+    from threading import Event
+    Event().wait()
 
 
 # ---------------------------
