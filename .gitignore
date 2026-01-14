@@ -3,4 +3,12 @@
 
 # Ignore runs and logs folder
 runs/
-logs/
+logs
+
+# Ignore backtesting results files
+backtest_results_MSFT.json
+backtest_trades_MSFT.csv
+backtest_results_AAPL.json
+backtest_trades_AAPL.csv
+backtest_results_AMZN.json
+backtest_trades_AMZN.csv
