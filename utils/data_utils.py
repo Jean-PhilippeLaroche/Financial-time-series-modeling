@@ -130,6 +130,34 @@ def load_stock_sqlite(ticker, db_dir=None):
     return df
 
 
+def filter_regular_hours_only(df):
+    """
+    Keep only regular market hours: 9:30 AM - 4:00 PM EST
+    Works with timestamp as index.
+    """
+    df = df.copy()
+
+    # Use the index (which is the timestamp)
+    if not pd.api.types.is_datetime64_any_dtype(df.index):
+        df.index = pd.to_datetime(df.index)
+
+    # Extract time from index
+    time = df.index.time
+
+    # Define market hours
+    market_open = pd.to_datetime('09:30', format='%H:%M').time()
+    market_close = pd.to_datetime('16:00', format='%H:%M').time()
+
+    # Filter
+    mask = (time >= market_open) & (time <= market_close)
+
+    print(f"Original data:          {len(df):,} rows")
+    print(f"Regular hours:          {mask.sum():,} rows ({mask.sum() / len(df) * 100:.1f}%)")
+    print(f"Removed:                {(~mask).sum():,} rows ({(~mask).sum() / len(df) * 100:.1f}%)")
+
+    return df[mask]
+
+
 def compute_rsi(df, period=14, column="close"):
     """
     Compute Relative Strength Index (RSI).
@@ -327,8 +355,7 @@ def prepare_data_for_ai(
     sma_period=20,
     start_idx=None,
     end_idx=None,
-    scaler=None,
-        df=None
+    scaler=None
 ):
     """
     Full pipeline to prepare stock data for AI training or validation.
@@ -347,7 +374,10 @@ def prepare_data_for_ai(
             logging.error(f"CSV not found for {ticker}.")
             return None, None, None
 
-    # 2) Compute indicators on full data to avoid leakage
+    # 2) Remove extended hours for better accuracy
+    whole_df = filter_regular_hours_only(whole_df)
+
+    # 3) Compute indicators on full data to avoid leakage
     whole_df = add_indicators(
         whole_df,
         rsi_period=rsi_period,
@@ -360,17 +390,17 @@ def prepare_data_for_ai(
 
     whole_df = clean_data(whole_df)
 
-    # 3) Slice after indicator computation
+    # 4) Slice after indicator computation
     s = start_idx if start_idx is not None else 0
     e = end_idx if end_idx is not None else len(whole_df)
     df = whole_df.iloc[s:e].copy()
 
-    # 4) Select features
+    # 5) Select features
     if feature_columns is None:
         feature_columns = ["close", "volume","RSI", "MACD", "MACD_Signal", "SMA"]
         feature_columns = [c for c in feature_columns if c in df.columns]
 
-    # 5) Scale features
+    # 6) Scale features
     if scaler is None:
         # Training phase: create and fit new scaler
         scaler = MinMaxScaler()
@@ -383,7 +413,7 @@ def prepare_data_for_ai(
     df_scaled = df.copy()
     df_scaled[feature_columns] = scaler.transform(df[feature_columns])
 
-    # 6) Create sequences
+    # 7) Create sequences
     X, y = create_sequences(df_scaled, feature_columns,
                             target_column=target_column,
                             window_size=window_size)

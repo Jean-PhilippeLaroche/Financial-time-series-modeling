@@ -4,6 +4,7 @@ import atexit
 
 from utils.data_utils import (
     prepare_data_for_ai,
+    filter_regular_hours_only,
     load_stock_csv,
     add_indicators,
     clean_data, load_stock_sqlite
@@ -45,8 +46,8 @@ def main(
         lr_scheduler_patience=6,
         lr_scheduler_factor=0.5,
         model_interpret=False,
-        grad_clip_percentile=95,
-        use_adaptive_clipping=True
+        max_norm=0.1,
+        use_gradient_clipping=True
 ):
 
     # Colors
@@ -66,10 +67,11 @@ def main(
 
     if model_interpret:
         print("Model will be interpreted automatically after backtesting")
-    if use_adaptive_clipping:
-        print("Adaptive clipping:      ENABLED")
+    if use_gradient_clipping:
+        print(f"Gradient clipping:      ENABLED")
+        print(f"Max norm:               {max_norm}")
     else:
-        print("Adaptive clipping:      DISABLED")
+        print("Gradient clipping:      DISABLED")
 
     # ---- Launch TensorBoard automatically ----
     tb_process = launch_tensorboard(logdir="runs", port=6006)
@@ -103,6 +105,7 @@ def main(
 
     df_tmp = add_indicators(df_raw)
     df_tmp = clean_data(df_tmp)
+    df_tmp = filter_regular_hours_only(df_tmp)
 
     n_total = len(df_tmp)
     split_idx = int(n_total * train_size)
@@ -192,8 +195,8 @@ def main(
         early_stopping_patience=patience,
         lr_scheduler_patience=lr_scheduler_patience,
         lr_scheduler_factor=lr_scheduler_factor,
-        grad_clip_percentile=grad_clip_percentile,
-        use_adaptive_clipping=use_adaptive_clipping
+        max_norm=max_norm,
+        use_gradient_clipping=use_gradient_clipping
     )
 
     if model is None:
@@ -407,10 +410,10 @@ if __name__ == "__main__":
                         help="Early stopping after fixed number of epoch without improvement")
 
     # Gradient clipping parameters
-    parser.add_argument("--grad_clip_percentile", type=float, default=95,
-                        help="Percentile for adaptive gradient clipping (ex. 95)")
-    parser.add_argument("--no_adaptive_clipping", action="store_true",
-                        help="Disable adaptive gradient clipping")
+    parser.add_argument("--max_norm", type=float, default=1.0,
+                        help="Max norm for gradient clipping (ex. 1.0)")
+    parser.add_argument("--no_gradient_clipping", action="store_true",
+                        help="Disable gradient clipping")
 
     # Visualization
     parser.add_argument("--no_viz", action="store_true",
@@ -441,6 +444,6 @@ if __name__ == "__main__":
         patience=args.patience,
         lr_scheduler_patience=args.lr_scheduler_patience,
         lr_scheduler_factor=args.lr_scheduler_factor,
-        grad_clip_percentile =args.grad_clip_percentile,
-        use_adaptive_clipping =not args.no_adaptive_clipping
+        max_norm =args.max_norm,
+        use_gradient_clipping =not args.no_gradient_clipping
     )

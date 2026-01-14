@@ -72,29 +72,15 @@ def log_activations_to_tensorboard(writer, activations, epoch):
                           activation.min().item(), epoch)
 
 
-def adaptive_grad_clip(model, percentile=95):
-    """
-    Adaptive gradient clipping based on gradient distribution.
-
-    Args:
-        model: PyTorch model
-        percentile: Percentile to clip at (default: 95)
-
-    Returns:
-        float: Clip value used (for logging)
-    """
-    grads = []
-    for param in model.parameters():
-        if param.grad is not None:
-            grads.append(param.grad.view(-1).abs())
-
-    if grads:
-        all_grads = torch.cat(grads)
-        clip_value = torch.quantile(all_grads, percentile / 100.0)
-        torch.nn.utils.clip_grad_value_(model.parameters(),
-                                        clip_value=clip_value.item())
-        return clip_value.item()
-    return None
+def simple_grad_clip(model, max_norm=1.0):
+    """Simple and effective gradient norm clipping."""
+    total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+    clipped = total_norm > max_norm
+    return {
+        'clipped': clipped,
+        'grad_norm': total_norm.item(),
+        'clip_value': max_norm
+    }
 
 
 def launch_tensorboard(logdir="runs", port=6006):
@@ -335,7 +321,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
                 epochs=20, batch_size=64, lr=1e-4, writer=None, scaler=None,
                 early_stopping_patience=20, lr_scheduler_patience=5, lr_scheduler_factor=0.5,
                 d_model=128, nhead=8, num_layers=3, dim_feedforward=512, dropout=0.1,
-                grad_clip_percentile=95, use_adaptive_clipping=True
+                max_norm=1.0, use_gradient_clipping=True
                 ):
     """
     Train the Transformer model.
@@ -357,8 +343,8 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         num_layers: Number of transformer layers
         dim_feedforward: Feedforward dimension
         dropout: Dropout rate
-        grad_clip_percentile: Percentile for adaptive clipping (default: 95)
-        use_adaptive_clipping: use adaptive clipping or not (default: True)
+        grad_clip_percentile: Percentile for gradient clipping (default: 1.0)
+        use_gradient_clipping: use gradient clipping or not (default: True)
     """
 
     set_feature_names(["close", "volume", "RSI", "MACD", "MACD_Signal", "SMA"])
@@ -414,8 +400,14 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
     forward_times = []
     backward_times = []
     optimizer_times = []
-    adaptive_clipping_times = []
+    gradient_clipping_times = []
     other_times = []
+
+    # Gradient norm clipping statistics
+    num_clips = 0
+    total_grad_norm = 0.0
+    total_clip_value = 0.0
+    num_batches_with_grads = 0
 
     # Colors
     BLUE = "\033[94m"
@@ -441,13 +433,16 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         ep_forward = 0.0
         ep_backward = 0.0
         ep_optimizer = 0.0
-        ep_adaptive_clipping = 0.0
+        ep_gradient_clipping = 0.0
         ep_other = 0.0
         ep_train_loop = 0.0
 
+
         # Clipping tracking variables
         num_clips = 0
+        total_grad_norm = 0.0
         total_clip_value = 0.0
+        num_batches_with_grads = 0
 
         for batch_X, batch_y in train_loader:
             batch_load_start = time.time()
@@ -479,14 +474,21 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
 
             ep_backward += time.time() - bwd_start
 
-            # Adaptive gradient clipping
-            if use_adaptive_clipping:
+            # Gradient clipping
+            if use_gradient_clipping:
                 adapt_start = time.time()
-                clip_value = adaptive_grad_clip(model, percentile=grad_clip_percentile)
-                if clip_value is not None:
-                    num_clips += 1
-                    total_clip_value += clip_value
-                ep_adaptive_clipping += time.time() - adapt_start
+                clip_info = simple_grad_clip(model, max_norm=1.0)
+
+                # Track statistics
+                if clip_info['grad_norm'] > 0:  # Only track if gradients exist
+                    num_batches_with_grads += 1
+                    total_grad_norm += clip_info['grad_norm']
+                    total_clip_value += clip_info['clip_value']
+
+                    if clip_info['clipped']:
+                        num_clips += 1
+
+                ep_gradient_clipping += time.time() - adapt_start
 
             # Optimizer
             opt_start = time.time()
@@ -497,10 +499,20 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
 
             ep_optimizer += time.time() - opt_start
 
+        # Calculate gradient clipping statistics for the epoch
+        if use_gradient_clipping and num_batches_with_grads > 0:
+            clip_rate = num_clips / num_batches_with_grads
+            avg_grad_norm = total_grad_norm / num_batches_with_grads
+            avg_clip_value = total_clip_value / num_batches_with_grads
+        else:
+            clip_rate = 0.0
+            avg_grad_norm = 0.0
+            avg_clip_value = 0.0
+
         # Timer values
         ep_train_loop += time.time() - train_loop_start
         ep_other = ep_train_loop - (ep_forward + ep_backward + ep_optimizer
-                                    + ep_adaptive_clipping + ep_batch_load)
+                                    + ep_gradient_clipping + ep_batch_load)
 
         train_loop_times.append(ep_train_loop)
 
@@ -508,7 +520,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         forward_times.append(ep_forward)
         backward_times.append(ep_backward)
         optimizer_times.append(ep_optimizer)
-        adaptive_clipping_times.append(ep_adaptive_clipping)
+        gradient_clipping_times.append(ep_gradient_clipping)
         other_times.append(ep_other)
 
 
@@ -560,15 +572,15 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
                 log_activation_health_to_tensorboard(writer, activations, epoch, num_layers)
 
             # Gradient clipping statistics
-            if num_clips > 0:
-                avg_clip_value = total_clip_value / num_clips
-                clip_rate = num_clips / len(train_loader)
-            else:
-                avg_clip_value = 0.0
-                clip_rate = 0.0
+            if use_gradient_clipping:
+                writer.add_scalar('Gradients/clip_rate', clip_rate, epoch)
+                writer.add_scalar('Gradients/avg_grad_norm', avg_grad_norm, epoch)
+                writer.add_scalar('Gradients/avg_clip_value', avg_clip_value, epoch)
 
-            writer.add_scalar('Gradients/avg_clip_value', avg_clip_value, epoch)
-            writer.add_scalar('Gradients/clip_rate', clip_rate, epoch)
+                # Additional useful metric: ratio of grad_norm to clip_value
+                if avg_clip_value > 0:
+                    norm_to_clip_ratio = avg_grad_norm / avg_clip_value
+                    writer.add_scalar('Gradients/norm_to_clip_ratio', norm_to_clip_ratio, epoch)
 
             # Log embeddings every 5 epochs
             if epoch % 5 == 0:
@@ -592,12 +604,27 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
             RESET = "\033[0m"
 
             # Warning if clipping too frequently
-            if clip_rate > 0.8:
-                print(f"\n{YELLOW}{'-' * 70}{RESET}")
-                print(f"{YELLOW}ADAPTIVE CLIPPING WARNING (Epoch {epoch}){RESET}")
-                print(f"{YELLOW}{'-' * 70}{RESET}")
-                logging.warning(f"High clipping rate ({clip_rate:.1%})")
-                print(f"{YELLOW}{'-' * 70}{RESET}\n")
+            if use_gradient_clipping:
+                if clip_rate > 0.3:  # More than 30% of batches clipping
+                    print(f"\n{YELLOW}{'-' * 70}{RESET}")
+                    print(f"{YELLOW}GRADIENT CLIPPING WARNING (Epoch {epoch}){RESET}")
+                    print(f"{YELLOW}{'-' * 70}{RESET}")
+                    print(f"  Clip Rate:       {clip_rate:.1%} (>{30}% threshold)")
+                    print(f"  Avg Grad Norm:   {avg_grad_norm:.4f}")
+                    print(f"  Avg Clip Value:  {avg_clip_value:.4f}")
+                    print(f"  Ratio:           {avg_grad_norm / avg_clip_value:.2f}x")
+                    print(f"\n  Recommendations:")
+                    if clip_rate > 0.5:
+                        print(
+                            f"    - Increase max_norm (current: {avg_clip_value:.2f} -> try: {avg_clip_value * 1.5:.2f})")
+                        print(f"    - Or reduce learning rate")
+                    elif avg_grad_norm > avg_clip_value * 2:
+                        print(f"    - Gradients are very large relative to clip value")
+                        print(f"    - Consider reducing learning rate")
+                        print(f"{YELLOW}{'-' * 70}{RESET}\n")
+                elif clip_rate > 0.0:
+                    # Info message if some clipping occurred (but not too much)
+                    logging.info(f"\n{GREEN}Gradient clipping: {clip_rate:.1%} of batches clipped (healthy){RESET}")
 
         # --------------------------
         # ACTIVATION HEALTH CHECK
@@ -644,8 +671,8 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         print(f"    Forward pass :       {ep_forward:>6.2f}s ({ep_forward / total_train * 100:>5.1f}%)")
         print(f"    Backward pass:       {ep_backward:>6.2f}s ({ep_backward / total_train * 100:>5.1f}%)")
 
-        if use_adaptive_clipping:
-            print(f"    Adaptive clipping:   {ep_adaptive_clipping:>6.2f}s ({ep_adaptive_clipping / total_train * 100:>5.1f}%)")
+        if use_gradient_clipping:
+            print(f"    Gradient clipping:   {ep_gradient_clipping:>6.2f}s ({ep_gradient_clipping / total_train * 100:>5.1f}%)")
 
         print(f"    Optimizer:           {ep_optimizer:>6.2f}s ({ep_optimizer / total_train * 100:>5.1f}%)")
         print(f"    Other:               {ep_other:>6.2f}s ({ep_other / total_train * 100:>5.1f}%)")
@@ -656,6 +683,8 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
             print(f"{GREEN}  Loss:              {avg_train_loss:.6f} (train), {avg_val_loss:.6f} (val){RESET}")
         else:
             print(f"  Loss:              {avg_train_loss:.6f} (train), {avg_val_loss:.6f} (val){RESET}")
+        if use_gradient_clipping:
+            print(f"  Gradient Norm:     {avg_grad_norm:.4f} (clip rate: {clip_rate:.1%})")
         print(f"  LR:                {optimizer.param_groups[0]['lr']:.2e}")
 
         # --------------------------
@@ -694,9 +723,15 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
     print(f"Avg batch load:        {np.mean(batch_load_times):.6f}s")
     print(f"Avg forward pass:      {np.mean(forward_times):.6f}s")
     print(f"Avg backward pass:     {np.mean(backward_times):.6f}s")
-    print(f"Avg adaptive clipping: {np.mean(adaptive_clipping_times):.6f}s")
+    print(f"Avg gradient clipping: {np.mean(gradient_clipping_times):.6f}s")
     print(f"Avg optimizer step:    {np.mean(optimizer_times):.6f}s")
     print(f"Avg other:             {np.mean(other_times):.6f}s")
+
+    print(f"\n{BLUE}--- Gradient Clipping Summary ---{RESET}")
+    print(f"Avg gradient clipping: {np.mean(gradient_clipping_times):.6f}s")
+    print(f"Avg clip rate:         {clip_rate:.1%}")
+    print(f"Avg grad norm:         {avg_grad_norm:.4f}")
+    print(f"Avg clip value:        {avg_clip_value:.4f}")
 
     return model
 
