@@ -347,7 +347,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         use_gradient_clipping: use gradient clipping or not (default: True)
     """
 
-    set_feature_names(["close", "volume", "RSI", "MACD", "MACD_Signal", "SMA"])
+    set_feature_names(["close","RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"])
 
     # Initialize Transformer model
     model = TimeSeriesTransformerPooled(

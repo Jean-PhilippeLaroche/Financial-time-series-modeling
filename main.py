@@ -5,6 +5,7 @@ import atexit
 from utils.data_utils import (
     prepare_data_for_ai,
     filter_regular_hours_only,
+    create_sequences,
     load_stock_csv,
     add_indicators,
     clean_data, load_stock_sqlite
@@ -103,40 +104,47 @@ def main(
         logging.error("Could not load raw CSV for ticker; exiting.")
         return
 
-    df_tmp = add_indicators(df_raw)
-    df_tmp = clean_data(df_tmp)
-    df_tmp = filter_regular_hours_only(df_tmp)
+    df_filtered = filter_regular_hours_only(df_raw)
+    df_with_indicators = add_indicators(df_filtered)
+    df_clean = clean_data(df_with_indicators)
 
-    n_total = len(df_tmp)
+    n_total = len(df_clean)
     split_idx = int(n_total * train_size)
     print(f"Train/Val split:        {split_idx} / {n_total-split_idx}")
+
+    # Split the dataframe
+    train_df = df_clean.iloc[:split_idx].copy()
+    val_df = df_clean.iloc[split_idx:].copy()
 
     # Step 1 timer
     print(f"Time:                   {time.time() - t0:.2f}s\n")
 
     # ============================================================
-    # STEP 2-3: Prepare TRAIN and VAL sequences using prepare_data_for_ai
-    #         Train: [0 : split_idx]
-    #         Val:   [split_idx : n_total]
+    # STEP 2: Prepare TRAIN sequences
     # ============================================================
     t0 = time.time()
     print(f"{BLUE}{'-' * 70}{RESET}")
     print(f"{BLUE}[Step 2] Preparing training sequences{RESET}")
 
-    # Using SQLite database if ticker is AAPL or MSFT
-    using_sqlite = ticker in ("AAPL", "MSFT")
+    # Select features
+    feature_columns = ["close", "RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"]
+    feature_columns = [c for c in feature_columns if c in train_df.columns]
 
-    X_train, y_train, scaler = prepare_data_for_ai(
-        ticker,
-        data_dir=None,
-        feature_columns=None,
-        SQLite=using_sqlite,
+    # Scale and create sequences
+    from sklearn.preprocessing import RobustScaler
+    scaler = RobustScaler()
+    scaler.fit(train_df[feature_columns])
+
+    train_df_scaled = train_df.copy()
+    train_df_scaled[feature_columns] = scaler.transform(train_df[feature_columns])
+
+    X_train, y_train = create_sequences(
+        train_df_scaled,
+        feature_columns,
         target_column="close",
-        window_size=window_size,
-        start_idx=0,
-        end_idx=split_idx,
-        # scaler=None
+        window_size=window_size
     )
+
     if X_train is None or y_train is None:
         logging.error("Training data preparation failed. Exiting.")
         return
@@ -146,28 +154,43 @@ def main(
     # Step 2 timer
     print(f"Time:                   {time.time() - t0:.2f}s\n")
 
+    # ============================================================
+    # STEP 3: Prepare VAL sequences
+    # ============================================================
+
     t0 = time.time()
     print(f"{BLUE}{'-' * 70}{RESET}")
     print(f"{BLUE}[Step 3] Preparing validation sequences{RESET}")
-    X_val, y_val, _ = prepare_data_for_ai(
-        ticker,
-        data_dir=None,
-        feature_columns=None,
-        SQLite=using_sqlite,
+
+    # Use the SAME scaler (don't refit!)
+    val_df_scaled = val_df.copy()
+    val_df_scaled[feature_columns] = scaler.transform(val_df[feature_columns])
+
+    X_val, y_val = create_sequences(
+        val_df_scaled,
+        feature_columns,
         target_column="close",
-        window_size=window_size,
-        start_idx=split_idx,
-        end_idx=None,
-        scaler=scaler
+        window_size=window_size
     )
+
     if X_val is None or y_val is None:
         logging.error("Validation data preparation failed. Exiting.")
         return
 
     print(f"Validation sequences:   X_val={X_val.shape}, y_val={y_val.shape}")
 
+    print(f"\n{BLUE}=== DATA SPLIT VERIFICATION ==={RESET}")
+    print(f"Train samples: {len(X_train):,}")
+    print(f"Val samples: {len(X_val):,}")
+    print(f"Train price range: [{y_train.min():.4f}, {y_train.max():.4f}]")
+    print(f"Val price range: [{y_val.min():.4f}, {y_val.max():.4f}]")
+    print(f"Train price mean: {y_train.mean():.4f}")
+    print(f"Val price mean: {y_val.mean():.4f}")
+    print(f"Shift: {abs(y_train.mean() - y_val.mean()) / y_train.mean() * 100:.1f}%")
+
     # Step 3 timer
-    print(f"Time:                   {time.time() - t0:.2f}s\n")
+    print(f"Time:                   {time.time() - t0:.2f}s")
+    print(f"{BLUE}{'-' * 70}{RESET}\n")
 
     # ============================================================
     # STEP 4: Start TensorBoard writer and train
@@ -223,8 +246,9 @@ def main(
 
     df_clean = add_indicators(df_raw)
     df_clean = clean_data(df_clean)
+    df_clean = filter_regular_hours_only(df_clean)
 
-    feature_columns = ["close", "volume", "RSI", "MACD", "MACD_Signal", "SMA"]
+    feature_columns = ["close", "RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"]
     feature_columns = [c for c in feature_columns if c in df_clean.columns]
     print(f"Using feature columns:  {feature_columns}")
 
@@ -261,7 +285,7 @@ def main(
             signal_map = {'BUY': 1, 'HOLD': 0, 'SELL': -1}
 
             indicators = {}
-            for ind in ["SMA", "RSI", "MACD", "MACD_Signal"]:
+            for ind in ["RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"]:
                 if ind in df_clean.columns:
                     indicators[ind] = df_clean[ind].iloc[val_start_idx:val_end_idx].values
 
@@ -333,7 +357,7 @@ def main(
     print(f"{BLUE}{'=' * 70}{RESET}")
     print(f"Ticker:                  {ticker}")
     print(f"Training epochs:         {epochs}")
-    print(f"Validation period:       {val_end_idx - val_start_idx} days")
+    print(f"Validation period:       {val_end_idx - val_start_idx} predictions")
     print(f"{BLUE}{'-' * 70}{RESET}")
     print(f"Initial Balance:         ${initial_balance:,.2f}")
     print(f"Final Portfolio Value:   ${backtest_results['final_value']:,.2f}")
@@ -349,6 +373,8 @@ def main(
     print(f"Total Trades:            {backtest_results['total_trades']}")
     print(f"Total Fees Paid:         ${backtest_results['total_fees']:,.2f}")
     print(f"Transaction Cost:        {transaction_cost * 100}%")
+    print(f"\nParameters: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"Samples per parameter: {len(X_train) / sum(p.numel() for p in model.parameters()):.1f}")
     print(f"{BLUE}{'=' * 70}{RESET}\n")
 
     print(f"{GREEN}Pipeline finished. Press CTRL+C to exit.{RESET}")
