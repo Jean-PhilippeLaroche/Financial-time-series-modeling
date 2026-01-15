@@ -347,7 +347,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         use_gradient_clipping: use gradient clipping or not (default: True)
     """
 
-    set_feature_names(["close","RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"])
+    set_feature_names(["close_return","RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"])
 
     # Initialize Transformer model
     model = TimeSeriesTransformerPooled(
@@ -546,6 +546,34 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         avg_train_loss = np.mean(train_losses)
         avg_val_loss = np.mean(val_losses)
 
+        # Calculate directional accuracy (for returns)
+        with torch.no_grad():
+            train_preds = []
+            train_actuals = []
+            for batch_X, batch_y in train_loader:
+                batch_X, batch_y = batch_X.to(DEVICE), batch_y.to(DEVICE)
+                outputs, _, _ = model(batch_X)
+                train_preds.extend(outputs.squeeze(-1).cpu().numpy())
+                train_actuals.extend(batch_y.cpu().numpy())
+
+            train_preds = np.array(train_preds)
+            train_actuals = np.array(train_actuals)
+
+            # Directional accuracy: did we predict the sign correctly?
+            train_direction_acc = np.mean(np.sign(train_preds) == np.sign(train_actuals))
+
+            val_preds = []
+            val_actuals = []
+            for batch_X, batch_y in val_loader:
+                batch_X, batch_y = batch_X.to(DEVICE), batch_y.to(DEVICE)
+                outputs, _, _ = model(batch_X)
+                val_preds.extend(outputs.squeeze(-1).cpu().numpy())
+                val_actuals.extend(batch_y.cpu().numpy())
+
+            val_preds = np.array(val_preds)
+            val_actuals = np.array(val_actuals)
+            val_direction_acc = np.mean(np.sign(val_preds) == np.sign(val_actuals))
+
         scheduler.step(avg_val_loss)
 
         epoch_times.append(time.time() - epoch_start)
@@ -565,6 +593,8 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
             log_feature_importance_to_tensorboard(writer, last_batch_X, last_attn, epoch)
             writer.add_scalar('Loss/train', avg_train_loss, epoch)
             writer.add_scalar('Loss/validation', avg_val_loss, epoch)
+            writer.add_scalar('Metrics/train_direction_accuracy', train_direction_acc, epoch)
+            writer.add_scalar('Metrics/val_direction_accuracy', val_direction_acc, epoch)
             writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], epoch)
 
             if epoch % 1 == 0:  # Every epoch
@@ -680,9 +710,14 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         print(f"  Total:             {epoch_times[epoch-1]:.3f}s | {(epoch_times[epoch-1]) / 60:.2f}m")
 
         if avg_val_loss < best_val_loss:
-            print(f"{GREEN}  Loss:              {avg_train_loss:.6f} (train), {avg_val_loss:.6f} (val){RESET}")
+            print(f"{GREEN}  Loss (MSE):        {avg_train_loss:.8f} (train), {avg_val_loss:.8f} (val){RESET}")
         else:
-            print(f"  Loss:              {avg_train_loss:.6f} (train), {avg_val_loss:.6f} (val){RESET}")
+            print(f"  Loss (MSE):        {avg_train_loss:.8f} (train), {avg_val_loss:.8f} (val){RESET}")
+
+        # Add return magnitude context:
+        print(f"  RMSE (return):     {np.sqrt(avg_train_loss):.4%} (train), {np.sqrt(avg_val_loss):.4%} (val)")
+
+        print(f"  Direction Accuracy:{train_direction_acc:.1%} (train), {val_direction_acc:.1%} (val)")
         if use_gradient_clipping:
             print(f"  Gradient Norm:     {avg_grad_norm:.4f} (clip rate: {clip_rate:.1%})")
         print(f"  LR:                {optimizer.param_groups[0]['lr']:.2e}")
@@ -692,7 +727,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         # --------------------------
         if avg_val_loss < best_val_loss:
             torch.save(model.state_dict(), checkpoint_path)
-            logging.info(f"{GREEN}New best model saved (val_loss: {avg_val_loss:.6f}){RESET}")
+            logging.info(f"{GREEN}New best model saved (val_loss: {avg_val_loss:.6f}, dir_acc: {val_direction_acc:.1%}){RESET}")
             best_val_loss = avg_val_loss
             epochs_without_improvement = 0
         else:

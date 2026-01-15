@@ -5,7 +5,7 @@ import atexit
 from utils.data_utils import (
     prepare_data_for_ai,
     filter_regular_hours_only,
-    create_sequences,
+    create_sequences_with_forward_returns,
     load_stock_csv,
     add_indicators,
     clean_data, load_stock_sqlite
@@ -126,23 +126,30 @@ def main(
     print(f"{BLUE}{'-' * 70}{RESET}")
     print(f"{BLUE}[Step 2] Preparing training sequences{RESET}")
 
-    # Select features
+    # Select features - "close" will be converted to "close_return" automatically
     feature_columns = ["close", "RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"]
     feature_columns = [c for c in feature_columns if c in train_df.columns]
 
-    # Scale and create sequences
+    # Save raw close BEFORE scaling
+    raw_close_train = train_df['close'].copy()
+
+    # Scale features
     from sklearn.preprocessing import RobustScaler
     scaler = RobustScaler()
     scaler.fit(train_df[feature_columns])
+    print("Scaler:                 created & fitted RobustScaler")
 
     train_df_scaled = train_df.copy()
     train_df_scaled[feature_columns] = scaler.transform(train_df[feature_columns])
 
-    X_train, y_train = create_sequences(
+    # Create sequences with forward returns
+    X_train, y_train = create_sequences_with_forward_returns(
         train_df_scaled,
         feature_columns,
         target_column="close",
-        window_size=window_size
+        window_size=window_size,
+        forward_bars=5,
+        raw_close=raw_close_train
     )
 
     if X_train is None or y_train is None:
@@ -150,6 +157,8 @@ def main(
         return
 
     print(f"Training sequences:     X_train={X_train.shape}, y_train={y_train.shape}")
+    print(f"Target:                 5-bar forward returns")
+    print(f"Return stats:           mean={y_train.mean():.6f}, std={y_train.std():.6f}")
 
     # Step 2 timer
     print(f"Time:                   {time.time() - t0:.2f}s\n")
@@ -162,15 +171,22 @@ def main(
     print(f"{BLUE}{'-' * 70}{RESET}")
     print(f"{BLUE}[Step 3] Preparing validation sequences{RESET}")
 
-    # Use the SAME scaler (don't refit!)
+    # Save raw close BEFORE scaling
+    raw_close_val = val_df['close'].copy()
+
+    # Use the SAME scaler
     val_df_scaled = val_df.copy()
     val_df_scaled[feature_columns] = scaler.transform(val_df[feature_columns])
+    print("Scaler:                 using provided RobustScaler")
 
-    X_val, y_val = create_sequences(
+    # Create sequences with forward returns
+    X_val, y_val = create_sequences_with_forward_returns(
         val_df_scaled,
         feature_columns,
         target_column="close",
-        window_size=window_size
+        window_size=window_size,
+        forward_bars=5,
+        raw_close=raw_close_val
     )
 
     if X_val is None or y_val is None:
@@ -178,15 +194,23 @@ def main(
         return
 
     print(f"Validation sequences:   X_val={X_val.shape}, y_val={y_val.shape}")
+    print(f"Return stats:           mean={y_val.mean():.6f}, std={y_val.std():.6f}")
 
     print(f"\n{BLUE}=== DATA SPLIT VERIFICATION ==={RESET}")
     print(f"Train samples: {len(X_train):,}")
     print(f"Val samples: {len(X_val):,}")
-    print(f"Train price range: [{y_train.min():.4f}, {y_train.max():.4f}]")
-    print(f"Val price range: [{y_val.min():.4f}, {y_val.max():.4f}]")
-    print(f"Train price mean: {y_train.mean():.4f}")
-    print(f"Val price mean: {y_val.mean():.4f}")
-    print(f"Shift: {abs(y_train.mean() - y_val.mean()) / y_train.mean() * 100:.1f}%")
+
+    # Updated verification for RETURNS
+    print(f"Train return range: [{y_train.min():.4f}, {y_train.max():.4f}]")
+    print(f"Val return range: [{y_val.min():.4f}, {y_val.max():.4f}]")
+    print(f"Train return mean: {y_train.mean():.6f} ({y_train.mean() * 100:.3f}%)")
+    print(f"Val return mean: {y_val.mean():.6f} ({y_val.mean() * 100:.3f}%)")
+    print(f"Train return std: {y_train.std():.6f} ({y_train.std() * 100:.3f}%)")
+    print(f"Val return std: {y_val.std():.6f} ({y_val.std() * 100:.3f}%)")
+
+    # Distribution shift check
+    shift_pct = abs(y_train.mean() - y_val.mean()) / (y_train.std() + 1e-8) * 100
+    print(f"Distribution shift: {shift_pct:.1f}%")
 
     # Step 3 timer
     print(f"Time:                   {time.time() - t0:.2f}s")
@@ -355,10 +379,13 @@ def main(
     print(f"{BLUE}{'=' * 70}{RESET}")
     print(f"{BLUE}PIPELINE SUMMARY - {ticker}{RESET}")
     print(f"{BLUE}{'=' * 70}{RESET}")
+
     print(f"Ticker:                  {ticker}")
     print(f"Training epochs:         {epochs}")
     print(f"Validation period:       {val_end_idx - val_start_idx} predictions")
+    print(f"Target:                  Forward returns")
     print(f"{BLUE}{'-' * 70}{RESET}")
+
     print(f"Initial Balance:         ${initial_balance:,.2f}")
     print(f"Final Portfolio Value:   ${backtest_results['final_value']:,.2f}")
     print(f"Total Return:            {backtest_results['total_return']:>6.2f}%")
@@ -366,10 +393,12 @@ def main(
     print(f"Buy & Hold Return:       {backtest_results['buy_hold_return']:>6.2f}%")
     print(f"Outperformance:          {backtest_results['outperformance']:>6.2f}%")
     print(f"{BLUE}{'-' * 70}{RESET}")
+
     print(f"Sharpe Ratio:            {backtest_results['sharpe_ratio']:>6.3f}")
     print(f"Max Drawdown:            {backtest_results['max_drawdown']:>6.2f}%")
     print(f"Win Rate:                {backtest_results['win_rate']:>6.2f}%")
     print(f"{BLUE}{'-' * 70}{RESET}")
+
     print(f"Total Trades:            {backtest_results['total_trades']}")
     print(f"Total Fees Paid:         ${backtest_results['total_fees']:,.2f}")
     print(f"Transaction Cost:        {transaction_cost * 100}%")
