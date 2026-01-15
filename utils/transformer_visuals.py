@@ -149,12 +149,13 @@ def set_feature_names(feature_names):
     Should be called once before training.
 
     Args:
-        feature_names: List of feature names (e.g., ['RSI', 'MACD', 'close', 'SMA'])
+        feature_names: List of feature names (e.g., ['close_return', 'RSI', 'MACD', 'SMA'])
     """
     global _feature_names, _feature_importance_history
     _feature_names = feature_names
     _feature_importance_history = []
 
+    print(f"Feature names set for importance tracking: {feature_names}")
 
 def compute_feature_importance(batch_X, attn_weights):
     """
@@ -162,8 +163,14 @@ def compute_feature_importance(batch_X, attn_weights):
 
     This works by:
     1. Taking attention weights across all heads and layers
-    2. Aggregating attention scores for each timestep
-    3. Using the input embeddings to attribute attention back to original features
+    2. Computing how much attention each timestep receives (incoming attention)
+    3. Weighting each feature by both attention and its magnitude
+    4. Aggregating to get per-feature importance scores
+
+    The algorithm now:
+    - Uses both incoming and outgoing attention for better coverage
+    - Weights by feature magnitude (absolute value) to capture influence
+    - Normalizes properly to sum to 1.0
 
     Args:
         batch_X: Input batch tensor of shape (batch, seq_len, num_features)
@@ -184,25 +191,41 @@ def compute_feature_importance(batch_X, attn_weights):
     # Average across layers and heads: (batch, seq_len, seq_len)
     avg_attn = stacked_attn.mean(dim=(0, 2))
 
-    # For each position, sum the attention it receives from all other positions
-    # This gives us attention importance per timestep: (batch, seq_len)
-    timestep_importance = avg_attn.sum(dim=1)
+    # Compute both incoming and outgoing attention for each timestep
+    # Incoming: how much attention this position receives (column sum)
+    # Outgoing: how much attention this position gives (row sum)
+    incoming_attn = avg_attn.sum(dim=1)  # (batch, seq_len)
+    outgoing_attn = avg_attn.sum(dim=2)  # (batch, seq_len)
 
-    # Average across batch
-    timestep_importance = timestep_importance.mean(dim=0)  # (seq_len,)
+    # Combine both (average them)
+    timestep_importance = (incoming_attn + outgoing_attn) / 2
+
+    # Average across batch: (seq_len,)
+    timestep_importance = timestep_importance.mean(dim=0)
 
     # Now attribute timestep importance to features
-    # Using absolute values of input features as a proxy for their contribution
-    # Weight each feature by the attention at its timestep
+    # Use absolute values of input features weighted by their attention
 
     # Get absolute feature values averaged across batch: (seq_len, num_features)
     feature_magnitudes = batch_X.abs().mean(dim=0)
+
+    # Also consider feature variance as a signal of importance
+    # Features with higher variance are likely more informative
+    feature_variance = batch_X.var(dim=0).mean(dim=0)  # (num_features,)
+
+    # Normalize variance to [0, 1] range
+    if feature_variance.max() > 0:
+        feature_variance = feature_variance / feature_variance.max()
 
     # Weight each feature by timestep importance: (seq_len, num_features)
     weighted_features = feature_magnitudes * timestep_importance.unsqueeze(-1)
 
     # Sum across timesteps to get per-feature importance: (num_features,)
     feature_importance = weighted_features.sum(dim=0)
+
+    # Boost by variance (features with higher variance get slight boost)
+    # This helps identify features that are actively changing vs. static
+    feature_importance = feature_importance * (1 + 0.5 * feature_variance)
 
     # Normalize to sum to 1
     feature_importance = feature_importance / (feature_importance.sum() + 1e-8)
@@ -231,6 +254,12 @@ def log_feature_importance_to_tensorboard(writer, batch_X, attn_weights, epoch):
     if feature_importance is None:
         return
 
+    # Validate that feature importance shape matches feature names
+    if len(feature_importance) != len(_feature_names):
+        print(f"WARNING: Feature importance shape ({len(feature_importance)}) "
+              f"doesn't match feature names ({len(_feature_names)})")
+        return
+
     # Store history
     _feature_importance_history.append(feature_importance)
 
@@ -239,6 +268,15 @@ def log_feature_importance_to_tensorboard(writer, batch_X, attn_weights, epoch):
         writer.add_scalar(f'FeatureImportance/{feature_name}',
                           feature_importance[i],
                           epoch)
+
+    # Also log a bar chart for better visualization
+    if epoch % 5 == 0:  # Every 5 epochs to avoid clutter
+        # Create a simple text representation
+        importance_str = "\n".join([
+            f"{name}: {importance:.4f}"
+            for name, importance in zip(_feature_names, feature_importance)
+        ])
+        writer.add_text('FeatureImportance/Summary', importance_str, epoch)
 
 
 def get_feature_importance_history():
@@ -254,9 +292,40 @@ def get_feature_importance_history():
     return np.array(_feature_importance_history)
 
 
+def plot_feature_importance_evolution():
+    """
+    Plot how feature importance evolves over training.
+
+    Returns:
+        matplotlib figure showing importance trends
+    """
+    history = get_feature_importance_history()
+
+    if history is None or _feature_names is None:
+        print("No feature importance history available")
+        return None
+
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    for i, feature_name in enumerate(_feature_names):
+        ax.plot(history[:, i], label=feature_name, linewidth=2)
+
+    ax.set_xlabel('Epoch', fontsize=12)
+    ax.set_ylabel('Feature Importance', fontsize=12)
+    ax.set_title('Feature Importance Evolution During Training', fontsize=14)
+    ax.legend(loc='best')
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    return fig
+
+
 def reset_feature_tracking():
     """
     Reset feature importance tracking.
+    Call this when starting a new training run.
     """
     global _feature_importance_history
     _feature_importance_history = []

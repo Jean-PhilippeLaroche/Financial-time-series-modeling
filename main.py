@@ -11,11 +11,13 @@ from utils.data_utils import (
     clean_data, load_stock_sqlite
 )
 from utils.plot_utils import visualize_model_performance
-from scripts.train import train_model, get_tensorboard_writer, launch_tensorboard
+from scripts.train import train_model, get_tensorboard_writer, launch_tensorboard, DEVICE
 from scripts.backtest import run_backtest
 import time
 
 from utils.model_interpretation import main_interpretation
+import torch
+import numpy as np
 
 # ---------------------------
 # Logging
@@ -36,6 +38,7 @@ def main(
         threshold=0.02,
         initial_balance=10000,
         transaction_cost=0.0015,
+        forward_bars=5,
         visualize=True,
         # Transformer hyperparameters
         d_model=256,
@@ -201,16 +204,33 @@ def main(
     print(f"Val samples: {len(X_val):,}")
 
     # Updated verification for RETURNS
-    print(f"Train return range: [{y_train.min():.4f}, {y_train.max():.4f}]")
-    print(f"Val return range: [{y_val.min():.4f}, {y_val.max():.4f}]")
-    print(f"Train return mean: {y_train.mean():.6f} ({y_train.mean() * 100:.3f}%)")
-    print(f"Val return mean: {y_val.mean():.6f} ({y_val.mean() * 100:.3f}%)")
-    print(f"Train return std: {y_train.std():.6f} ({y_train.std() * 100:.3f}%)")
-    print(f"Val return std: {y_val.std():.6f} ({y_val.std() * 100:.3f}%)")
+    print(f"Train return range:     [{y_train.min():.4f}, {y_train.max():.4f}]")
+    print(f"Val return range:       [{y_val.min():.4f}, {y_val.max():.4f}]")
+    print(f"Train return mean:      {y_train.mean():.6f} ({y_train.mean() * 100:.3f}%)")
+    print(f"Val return mean:        {y_val.mean():.6f} ({y_val.mean() * 100:.3f}%)")
+    print(f"Train return std:       {y_train.std():.6f} ({y_train.std() * 100:.3f}%)")
+    print(f"Val return std:         {y_val.std():.6f} ({y_val.std() * 100:.3f}%)")
+
+    print("\n" + "=" * 70)
+    print("TARGET DISTRIBUTION ANALYSIS")
+    print("=" * 70)
+    print(f"Train targets (y_train):")
+    print(f"  Mean:   {y_train.mean():.8f}")
+    print(f"  Std:    {y_train.std():.8f}")
+    print(f"  Min:    {y_train.min():.8f}")
+    print(f"  Max:    {y_train.max():.8f}")
+    print(f"  Median: {np.median(y_train):.8f}")
+    print(f"\nPercentiles:")
+    for p in [1, 5, 25, 50, 75, 95, 99]:
+        print(f"  {p}th: {np.percentile(y_train, p):.8f}")
+    print(f"\nTarget variance: {y_train.var():.10f}")
+    print(f"Non-zero targets: {np.count_nonzero(y_train)} / {len(y_train)}")
+    print(f"Unique values: {len(np.unique(y_train))}")
+    print("=" * 70 + "\n")
 
     # Distribution shift check
     shift_pct = abs(y_train.mean() - y_val.mean()) / (y_train.std() + 1e-8) * 100
-    print(f"Distribution shift: {shift_pct:.1f}%")
+    print(f"Distribution shift:     {shift_pct:.1f}%")
 
     # Step 3 timer
     print(f"Time:                   {time.time() - t0:.2f}s")
@@ -264,6 +284,19 @@ def main(
     #         Backtest DF = df_clean (recomputed to avoid leakages)
     #         Period = [split_idx : n_total]
     # ============================================================
+
+    with torch.no_grad():
+        sample_X = torch.tensor(X_val[:1000], dtype=torch.float32).to(DEVICE)
+        sample_preds = model(sample_X)[0].cpu().numpy()
+
+    print(f"\nModel Prediction Statistics:")
+    print(f"  Mean: {sample_preds.mean():.6f}")
+    print(f"  Std:  {sample_preds.std():.6f}")
+    print(f"  Min:  {sample_preds.min():.6f}")
+    print(f"  Max:  {sample_preds.max():.6f}")
+    print(f"  |pred| > 0.005: {(np.abs(sample_preds) > 0.005).sum()} / 1000")
+    print(f"  |pred| > 0.002: {(np.abs(sample_preds) > 0.002).sum()} / 1000")
+
     t0 = time.time()
     print(f"{BLUE}{'-' * 70}{RESET}")
     print(f"{BLUE}[Step 5] Running backtest on validation slice of the dataframe{RESET}")
@@ -285,6 +318,7 @@ def main(
         df=df_clean,
         feature_columns=feature_columns,
         window_size=window_size,
+        forward_bars=forward_bars,
         initial_balance=initial_balance,
         transaction_cost_pct=transaction_cost,
         threshold=threshold,
@@ -293,7 +327,7 @@ def main(
     )
 
     # Step 5 timer (not displayed because obsolete, custom timers in backtesting.py
-    #logging.info(f"\033[91mStep 5: {time.time() - t0}\n\033[0m")
+    # logging.info(f"\033[91mStep 5: {time.time() - t0}\n\033[0m")
 
     # ============================================================
     # STEP 6: Prepare and generate visualization data
@@ -316,7 +350,7 @@ def main(
             visualize_model_performance(
                 dates=portfolio_history['date'].values,
                 actual_prices=portfolio_history['current_price'].values,
-                predicted_prices=portfolio_history['predicted_price'].values,
+                predicted_returns=portfolio_history['predicted_return'].values,
                 signals=portfolio_history['signal'].map(signal_map).values,
                 portfolio_values=portfolio_history['portfolio_value'].values,
                 indicators=indicators if indicators else None,
@@ -336,6 +370,7 @@ def main(
     results_summary = {
         'ticker': ticker,
         'window_size': window_size,
+        'forward_bars': forward_bars,
         'epochs': epochs,
         'threshold': threshold,
         'initial_balance': initial_balance,
@@ -371,7 +406,6 @@ def main(
                             dim_feedforward, d_model, nhead, num_layers,
                             file="csv", input_size=X_train.shape[2])
 
-
     # ============================================================
     # STEP 9: Summary
     # ============================================================
@@ -383,7 +417,8 @@ def main(
     print(f"Ticker:                  {ticker}")
     print(f"Training epochs:         {epochs}")
     print(f"Validation period:       {val_end_idx - val_start_idx} predictions")
-    print(f"Target:                  Forward returns")
+    print(f"Prediction horizon:      {forward_bars} bars ahead")
+    print(f"Target:                  {forward_bars}-bar forward returns")
     print(f"{BLUE}{'-' * 70}{RESET}")
 
     print(f"Initial Balance:         ${initial_balance:,.2f}")
@@ -402,6 +437,7 @@ def main(
     print(f"Total Trades:            {backtest_results['total_trades']}")
     print(f"Total Fees Paid:         ${backtest_results['total_fees']:,.2f}")
     print(f"Transaction Cost:        {transaction_cost * 100}%")
+    print(f"Signal Threshold:        {threshold * 100:.2f}% return")
     print(f"\nParameters: {sum(p.numel() for p in model.parameters()):,}")
     print(f"Samples per parameter: {len(X_train) / sum(p.numel() for p in model.parameters()):.1f}")
     print(f"{BLUE}{'=' * 70}{RESET}\n")
@@ -456,11 +492,14 @@ if __name__ == "__main__":
 
     # Trading parameters
     parser.add_argument("--threshold", type=float, default=0.02,
-                        help="Relative threshold for buy/sell signals (e.g., 0.02 = 2%%)")
+                        help="Relative threshold for buy/sell signals (e.g., 0.02 = 2%)")
     parser.add_argument("--balance", type=float, default=10000,
                         help="Initial balance for backtesting")
     parser.add_argument("--transaction_cost", type=float, default=0.0015,
                         help="Transaction cost as fraction (e.g., 0.02 = 2%%)")
+    parser.add_argument("--forward_bars", type=int, default=5,
+                        help="Prediction horizon (e.g., 5 = predict 5 minutes ahead)")
+
     parser.add_argument("--patience", type=int, default=20,
                         help="Early stopping after fixed number of epoch without improvement")
 
@@ -488,6 +527,7 @@ if __name__ == "__main__":
         threshold=args.threshold,
         initial_balance=args.balance,
         transaction_cost=args.transaction_cost,
+        forward_bars=args.forward_bars,
         visualize=not args.no_viz,
         model_interpret=args.model_interpretation,
         # Transformer hyperparameters

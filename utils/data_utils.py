@@ -479,7 +479,7 @@ def prepare_sequences_from_df(df, feature_columns, window_size=20, forward_bars=
         feature_columns = ["close", "RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"]
         feature_columns = [c for c in feature_columns if c in df.columns]
 
-    # SAVE RAW CLOSE BEFORE SCALING!
+    # SAVE RAW CLOSE BEFORE SCALING
     raw_close = df['close'].copy()
 
     # Scale
@@ -493,7 +493,7 @@ def prepare_sequences_from_df(df, feature_columns, window_size=20, forward_bars=
     df_scaled = df.copy()
     df_scaled[feature_columns] = scaler.transform(df[feature_columns])
 
-    # Create sequences (passing raw_close!)
+    # Create sequences
     X, y = create_sequences_with_forward_returns(
         df_scaled,
         feature_columns,

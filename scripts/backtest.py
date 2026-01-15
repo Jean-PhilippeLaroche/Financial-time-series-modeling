@@ -51,7 +51,7 @@ class Backtester:
                  transaction_cost_pct=0.02,
                  position_size_pct=0.95,
                  max_shares_per_trade=100,
-                 threshold=0.005):  # NEW: 0.5% return threshold (was price-based)
+                 threshold=0.005):  # 0.5% return threshold
         """
         Initialize backtesting engine.
 
@@ -67,6 +67,9 @@ class Backtester:
             position_size_pct: Fraction of cash to use per trade
             max_shares_per_trade: Maximum shares per trade
             threshold: Return threshold for signals (e.g., 0.005 = 0.5% return)
+                0.001 = 0.1% (very sensitive, many trades)
+                0.005 = 0.5% (balanced)
+                0.01 = 1.0% (conservative, fewer trades)
         """
         self.model = model
         self.scaler = scaler

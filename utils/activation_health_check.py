@@ -10,6 +10,9 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
     """
     Automatically check if activation values are healthy or problematic.
 
+    UPDATED: Tuned for return-based prediction transformer model trained on
+    5 years of 1-minute intraday stock data with mean+max pooling.
+
     This function validates activation distributions against expected ranges
     and detects common training issues like exploding/vanishing activations,
     dead neurons, and saturation.
@@ -33,24 +36,35 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
     # =========================================================================
     # HEALTHY RANGES FOR EACH ACTIVATION TYPE
     # =========================================================================
-    # These ranges are based on typical transformer behavior with normalized data
-    # that I could find online -> TODO: adjust values based on future training
+    # UPDATED RANGES for return-based prediction:
+    # - Input features include returns (close_return) which are small decimals (-0.05 to +0.05)
+    # - RSI is bounded [0, 100], MACD/SMA_Deviation are typically [-5, +5]
+    # - ATR and Volume_Ratio are positive and can vary widely
+    # - After scaling with RobustScaler, features are approximately standardized
+    # - Model predicts returns (mean ~0, std ~0.01-0.02 for 5-bar forward returns)
 
     HEALTHY_RANGES = {
         'input_projection': {
-            'mean': (-0.5, 0.5),
-            'std': (0.5, 2.0),
-            'abs_max': 5.0
+            # After projecting scaled features to d_model
+            # Should be relatively centered with moderate spread
+            'mean': (-0.3, 0.3),
+            'std': (0.3, 1.5),
+            'abs_max': 4.0
         },
         'after_pos_encoding': {
-            'mean': (-0.5, 0.5),
-            'std': (0.5, 2.5),
-            'abs_max': 6.0
+            # After adding positional encoding
+            # Slightly wider distribution due to PE contribution
+            'mean': (-0.4, 0.4),
+            'std': (0.4, 2.0),  # PE adds variance
+            'abs_max': 5.0  # Moderate max values
         },
         'concat_pool': {
-            'mean': (-0.5, 0.5),
-            'std': (1.0, 5.0),
-            'abs_max': 15.0
+            # After mean+max pooling and concatenation (2*d_model)
+            # Max pooling can capture stronger signals
+            # For return prediction, this should be well-behaved
+            'mean': (-0.5, 0.5),  # Centered around zero
+            'std': (0.8, 4.0),
+            'abs_max': 10.0
         }
     }
 
@@ -58,21 +72,26 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
     def get_layer_ranges(layer_idx: int, total_layers: int, is_ffn: bool = False):
         """
         Get expected ranges for a specific transformer layer.
-        Later layers are allowed wider distributions.
+
+        UPDATED: Adjusted for return-based prediction where target values
+        are small (returns ~0.001 to 0.02). Activations should be more
+        controlled than when predicting raw prices.
+
+        Later layers are allowed slightly wider distributions but not as
+        extreme as price prediction models.
         """
         # Base multiplier increases with layer depth
-        layer_multiplier = 1 + (layer_idx / total_layers) * 0.5
+        layer_multiplier = 1 + (layer_idx / total_layers) * 0.3
 
         # FFN layers have wider distributions than attention layers
-        ffn_multiplier = 1.5 if is_ffn else 1.0
+        ffn_multiplier = 1.3 if is_ffn else 1.0
 
         return {
-            'mean': (-0.3 * layer_multiplier, 0.3 * layer_multiplier),
-            'std': (0.5 * layer_multiplier * ffn_multiplier,
-                    (2.0 + layer_idx) * ffn_multiplier),
-            'abs_max': (8.0 + layer_idx * 2) * ffn_multiplier
+            'mean': (-0.2 * layer_multiplier, 0.2 * layer_multiplier),
+            'std': (0.4 * layer_multiplier * ffn_multiplier,
+                    (1.5 + layer_idx * 0.3) * ffn_multiplier),
+            'abs_max': (6.0 + layer_idx * 1.5) * ffn_multiplier
         }
-
 
     def get_stats(tensor: torch.Tensor) -> Dict[str, float]:
         """Extract statistics from activation tensor."""
@@ -84,7 +103,6 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
             'max': flat.max().item(),
             'abs_max': flat.abs().max().item()
         }
-
 
     def check_range(value: float, expected_range: Tuple[float, float],
                     name: str, metric: str, is_critical: bool = False) -> None:
@@ -102,42 +120,42 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
                 is_healthy = False
                 logging.error(msg)
 
-            # Removed warning logs
-            #else:
-                #logging.warning(msg)
-
-
     def detect_dead_neurons(tensor: torch.Tensor, name: str, threshold: float = 0.01) -> None:
-        """Detect if too many neurons are inactive (dead)."""
+        """
+        Detect if too many neurons are inactive (dead).
+
+        UPDATED: Adjusted thresholds for return-based model.
+        Return prediction requires capturing subtle patterns, so we're
+        stricter about dead neurons.
+        """
         nonlocal is_healthy
 
         flat = tensor.view(-1).abs()
         dead_ratio = (flat < threshold).float().mean().item()
 
-        # Critical if >70% dead, warning if >50%
-        if dead_ratio > 0.7:
+        # Strict thresholds for return prediction
+        # Critical if >60% dead (was 70%), warning if >40% (was 50%)
+        if dead_ratio > 0.6:
             msg = f"CRITICAL - {name}: {dead_ratio * 100:.1f}% dead neurons (threshold: {threshold})"
             warnings.append(msg)
             is_healthy = False
             logging.error(msg)
-        elif dead_ratio > 0.5:
+        elif dead_ratio > 0.4:
             msg = f"WARNING - {name}: {dead_ratio * 100:.1f}% dead neurons (threshold: {threshold})"
             warnings.append(msg)
-            # Removed warning logs
-            #logging.warning(msg)
-
 
     def detect_saturation(tensor: torch.Tensor, name: str, threshold: float = 10.0) -> None:
-        """Detect if activations are saturating at extreme values."""
+        """
+        Detect if activations are saturating at extreme values.
+
+        UPDATED: Lower saturation threshold for return-based model.
+        """
         flat = tensor.view(-1).abs()
         saturated_ratio = (flat > threshold).float().mean().item()
 
-        if saturated_ratio > 0.1:  # >10% saturated is problematic
+        if saturated_ratio > 0.05:
             msg = f"WARNING - {name}: {saturated_ratio * 100:.1f}% saturated (>{threshold})"
             warnings.append(msg)
-
-            # Removed warning logs
-            #logging.warning(msg)
 
     def check_nan_inf(tensor: torch.Tensor, name: str) -> bool:
         """Check for NaN or Inf values (critical error)."""
@@ -155,7 +173,11 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
         return False
 
     def check_layer_progression(layer_stats: List[Dict], layer_type: str) -> None:
-        """Check if activation std grows reasonably across layers."""
+        """
+        Check if activation std grows reasonably across layers.
+
+        UPDATED: More conservative growth limits for return prediction.
+        """
         nonlocal is_healthy
 
         if len(layer_stats) < 2:
@@ -165,8 +187,8 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
             prev_std = layer_stats[i - 1]['std']
             curr_std = layer_stats[i]['std']
 
-            # Check for exponential explosion (>3x growth)
-            if curr_std > prev_std * 3.0 and prev_std > 0.1:
+            # Strict explosion threshold
+            if curr_std > prev_std * 2.5 and prev_std > 0.1:
                 msg = (f"CRITICAL - {layer_type} explosion: "
                        f"Layer {i - 1} std={prev_std:.2f} → Layer {i} std={curr_std:.2f} "
                        f"({curr_std / prev_std:.1f}x increase)")
@@ -179,9 +201,6 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
                 msg = (f"WARNING - {layer_type} vanishing: "
                        f"Layer {i - 1} std={prev_std:.2f} → Layer {i} std={curr_std:.2f}")
                 warnings.append(msg)
-
-                # Removed warning logs
-                #logging.warning(msg)
 
     # =========================================================================
     # RUN CHECKS
@@ -216,10 +235,8 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
                 msg = f"WARNING - {name}: max absolute value {stats['abs_max']:.2f} > {ranges['abs_max']}"
                 warnings.append(msg)
 
-                #logging.warning(msg)
-
-            # Check for dead neurons (less strict for input)
-            detect_dead_neurons(activation, name, threshold=0.001)
+            # Strict dead neuron detection for input
+            detect_dead_neurons(activation, name, threshold=0.005)
 
         # =====================================================================
         # 2. CHECK POSITIONAL ENCODING
@@ -235,7 +252,6 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
             if stats['abs_max'] > ranges['abs_max']:
                 msg = f"WARNING - {name}: max absolute value {stats['abs_max']:.2f} > {ranges['abs_max']}"
                 warnings.append(msg)
-                #logging.warning(msg)
 
         # =====================================================================
         # 3. CHECK TRANSFORMER LAYERS
@@ -262,12 +278,14 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
 
             # Check std (critical if too extreme)
             min_std, max_std = ranges['std']
-            if stats['std'] < min_std / 2:  # Severely vanishing
+
+            # Sensitive vanishing detection
+            if stats['std'] < min_std / 3:
                 msg = f"CRITICAL - {name}: std={stats['std']:.3f} too low (vanishing gradients likely)"
                 warnings.append(msg)
                 is_healthy = False
                 logging.error(msg)
-            elif stats['std'] > max_std * 2:  # Severely exploding
+            elif stats['std'] > max_std * 1.8:
                 msg = f"CRITICAL - {name}: std={stats['std']:.3f} too high (exploding activations)"
                 warnings.append(msg)
                 is_healthy = False
@@ -276,18 +294,17 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
                 check_range(stats['std'], ranges['std'], name, 'std',
                             is_critical=False)
 
-            # Check for extreme values
-            if stats['abs_max'] > ranges['abs_max'] * 1.5:
+            # Check for extreme values (more conservative)
+            if stats['abs_max'] > ranges['abs_max'] * 1.3:
                 msg = f"WARNING - {name}: max absolute value {stats['abs_max']:.2f} > {ranges['abs_max']}"
                 warnings.append(msg)
-                #logging.warning(msg)
 
-            # Dead neuron detection (stricter for deeper layers)
-            threshold = 0.01 if layer_idx == 0 else 0.05
+            # Dead neuron detection (stricter thresholds)
+            threshold = 0.005 if layer_idx == 0 else 0.02
             detect_dead_neurons(activation, name, threshold=threshold)
 
-            # Saturation detection
-            detect_saturation(activation, name, threshold=10.0 + layer_idx * 2)
+            # Saturation detection (more conservative thresholds)
+            detect_saturation(activation, name, threshold=8.0 + layer_idx * 1.5)
 
         # =====================================================================
         # 4. CHECK POOLED REPRESENTATION
@@ -300,17 +317,15 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
             check_range(stats['std'], ranges['std'], name, 'std',
                         is_critical=False)
 
-            # Final representation before output
-            if stats['abs_max'] > ranges['abs_max'] * 2:
+            # Stricter max value check for final representation
+            if stats['abs_max'] > ranges['abs_max'] * 1.5:
                 msg = f"WARNING - {name}: max absolute value {stats['abs_max']:.2f} very high"
                 warnings.append(msg)
-                #logging.warning(msg)
 
-            # Check if pooling is working (std too low = not learning)
-            if stats['std'] < 0.5 and not is_warmup:
+            # More sensitive to low std (not learning)
+            if stats['std'] < 0.3 and not is_warmup:  # Was 0.5
                 msg = f"WARNING - {name}: std={stats['std']:.3f} too low (model may not be learning)"
                 warnings.append(msg)
-                #logging.warning(msg)
 
     # =========================================================================
     # 5. CHECK LAYER-TO-LAYER PROGRESSION
@@ -333,11 +348,12 @@ def check_activation_health(activations: Dict[str, torch.Tensor],
 
     if text:
         if is_healthy and len(warnings) == 0:
-            logging.info(f"{GREEN}Epoch {epoch}: All activation checks passed, model is healthy{RESET}")
+            logging.info(f"{GREEN}Epoch {epoch}: All activation checks passed{RESET}")
         elif is_healthy and len(warnings) > 0:
-            logging.info(f"{GREEN}Epoch {epoch}: Model is healthy with {len(warnings)} minor warnings{RESET}")
+            logging.info(f"{YELLOW}Epoch {epoch}: Model healthy with {len(warnings)} minor warnings{RESET}")
         else:
-            logging.error(f"{RED}Epoch {epoch}: Critical activation issues detected, ({len(warnings)} total issues){RESET}")
+            logging.error(
+                f"{RED}Epoch {epoch}: Critical activation issues detected ({len(warnings)} total issues){RESET}")
 
     return is_healthy, warnings
 

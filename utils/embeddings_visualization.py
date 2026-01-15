@@ -4,7 +4,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 
 def log_embeddings_to_tensorboard(writer, model, data_loader, epoch,
-                                  max_samples=1000, metadata_type='time', device='cpu'):
+                                  max_samples=1000, metadata_type='price_change', device='cpu'):
     """
     Log embeddings to TensorBoard's projector for 3D visualization.
 
@@ -41,18 +41,36 @@ def log_embeddings_to_tensorboard(writer, model, data_loader, epoch,
             if metadata_type == 'time':
                 # Color by batch index (represents time progression)
                 metadata = torch.full((embeddings.shape[0],), batch_idx, dtype=torch.long)
+
             elif metadata_type == 'volatility':
-                # Calculate volatility from input sequence (std of close prices)
-                # Close price is first feature
-                volatility = batch_X[:, :, 0].std(dim=1)
+                # Calculate volatility from close_return
+                # For returns, volatility = std of returns in the window
+                close_returns = batch_X[:, :, 0]  # Shape: (batch, seq_len)
+                volatility = close_returns.std(dim=1)  # Std of returns per sample
+
                 # Discretize into categories for better visualization
                 metadata = discretize_values(volatility, num_bins=5).cpu()
+
             elif metadata_type == 'price_change':
-                # Calculate price change direction
-                price_start = batch_X[:, 0, 0]  # First close price
-                price_end = batch_X[:, -1, 0]  # Last close price
-                price_change_pct = ((price_end - price_start) / price_start) * 100
-                metadata = discretize_values(price_change_pct, num_bins=5).cpu()
+                # Calculate cumulative return over the window
+                # Since we have returns, cumulative return = sum of returns
+                close_returns = batch_X[:, :, 0]  # Shape: (batch, seq_len)
+
+                # Cumulative return over window (approximately)
+                # More accurate: (1+r1)*(1+r2)*... - 1, but sum is close for small returns
+                cumulative_return = close_returns.sum(dim=1)  # Sum returns over sequence
+
+                # Convert to percentage
+                cumulative_return_pct = cumulative_return * 100
+
+                metadata = discretize_values(cumulative_return_pct, num_bins=5).cpu()
+
+            elif metadata_type == 'target':
+                # This shows how embeddings relate to what we're trying to predict
+                target_returns = batch_y  # Already on same device as batch_X
+                target_returns_pct = target_returns * 100
+                metadata = discretize_values(target_returns_pct, num_bins=5).cpu()
+
             else:
                 metadata = torch.zeros(embeddings.shape[0], dtype=torch.long)
 
@@ -66,7 +84,7 @@ def log_embeddings_to_tensorboard(writer, model, data_loader, epoch,
     # Create metadata labels
     if metadata_type == 'time':
         label_names = [f'batch_{i}' for i in all_metadata.tolist()]
-    elif metadata_type in ['volatility', 'price_change']:
+    elif metadata_type in ['volatility', 'price_change', 'target']:
         label_names = [f'bin_{i}' for i in all_metadata.tolist()]
     else:
         label_names = None
@@ -90,7 +108,8 @@ def log_embeddings_to_tensorboard(writer, model, data_loader, epoch,
         tag=tag_name
     )
 
-    print(f"  Logged {all_embeddings.shape[0]} embeddings to TensorBoard (colored by {metadata_type}), tag name: {tag_name}")
+    print(
+        f"  Logged {all_embeddings.shape[0]} embeddings to TensorBoard (colored by {metadata_type}), tag name: {tag_name}")
 
 
 def extract_embeddings(model, batch_X):
@@ -157,12 +176,15 @@ def log_multiple_embedding_views(writer, model, data_loader, epoch, max_samples=
     """
     Log multiple views of embeddings with different coloring schemes.
 
-    This creates three separate visualizations in TensorBoard:
+    UPDATED: Now includes 'target' view to see how embeddings relate to predicted returns.
+
+    This creates four separate visualizations in TensorBoard:
     1. Colored by time (batch index)
-    2. Colored by volatility
-    3. Colored by price change direction
+    2. Colored by volatility (std of returns in window)
+    3. Colored by price change (cumulative return in window)
+    4. Colored by target (forward return predicted)
     """
-    for metadata_type in ['time', 'volatility', 'price_change']:
+    for metadata_type in ['time', 'volatility', 'price_change', 'target']:
         log_embeddings_to_tensorboard(
             writer, model, data_loader, epoch,
             max_samples=max_samples,

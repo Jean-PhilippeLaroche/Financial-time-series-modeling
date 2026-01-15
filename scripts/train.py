@@ -33,7 +33,7 @@ from utils.transformer_visuals import (
     update_attention_window,
     init_attention_window,
     set_feature_names,
-    log_feature_importance_to_tensorboard
+    log_feature_importance_to_tensorboard, reset_feature_tracking
 )
 from utils.activation_health_check import (
     check_activation_health,
@@ -170,6 +170,36 @@ def get_tensorboard_writer(log_dir="runs"):
     logging.info(f"TensorBoard logging started at {run_path}")
 
     return writer
+
+
+# Custom loss function
+class DiverseLoss(nn.Module):
+    """
+    Loss that combines Huber loss with a diversity penalty.
+    Huber is more robust to outliers than MSE.
+    """
+
+    def __init__(self, mse_weight=1.0, diversity_weight=1.0, huber_delta=0.01):
+        super().__init__()
+        self.mse_weight = mse_weight
+        self.diversity_weight = diversity_weight
+        self.huber = nn.HuberLoss(delta=huber_delta)
+
+    def forward(self, predictions, targets):
+        # Huber loss (more robust than MSE)
+        huber_loss = self.huber(predictions, targets)
+
+        # Diversity penalty
+        pred_std = predictions.std()
+        target_std = targets.std()
+
+        # Penalize if prediction std is too small
+        diversity_loss = torch.abs(pred_std - target_std) / (target_std + 1e-8)
+
+        total_loss = (self.mse_weight * huber_loss +
+                      self.diversity_weight * diversity_loss)
+
+        return total_loss, huber_loss, diversity_loss
 
 
 # -----------------------------
@@ -347,6 +377,8 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
         use_gradient_clipping: use gradient clipping or not (default: True)
     """
 
+    reset_feature_tracking()
+
     set_feature_names(["close_return","RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"])
 
     # Initialize Transformer model
@@ -364,7 +396,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
 
     print(f"Initialized Transformer with {sum(p.numel() for p in model.parameters()):,} parameters")
 
-    criterion = nn.MSELoss()
+    criterion = DiverseLoss(mse_weight=1.0, diversity_weight=1.0)
 
     # AdamW optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
@@ -464,13 +496,13 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
             mean_attn = [a.mean(dim=0).detach().cpu().numpy() for a in attn]
             # mean_attn becomes a list: [ (heads, seq, seq), ... per layer ]
 
-            loss = criterion(outputs, batch_y)
+            total_loss, mse_loss, div_loss = criterion(outputs, batch_y)
 
             ep_forward += time.time() - fwd_start
 
             # Backward pass
             bwd_start = time.time()
-            loss.backward()
+            total_loss.backward()
 
             ep_backward += time.time() - bwd_start
 
@@ -495,7 +527,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
             optimizer.step()
             optimizer.zero_grad()
 
-            train_losses.append(loss.item())
+            train_losses.append(total_loss.item())
 
             ep_optimizer += time.time() - opt_start
 
@@ -538,8 +570,8 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
                 outputs, _, _ = model(batch_X)
                 outputs = outputs.squeeze(-1)
 
-                val_loss = criterion(outputs, batch_y)
-                val_losses.append(val_loss.item())
+                total_loss, mse_loss, div_loss = criterion(outputs, batch_y)
+                val_losses.append(total_loss.item())
 
         val_loop_times.append(time.time() - val_loop_start)
 
@@ -625,6 +657,24 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
                     device=DEVICE
                 )
 
+            with torch.no_grad():
+                val_mse_losses = []
+                val_div_losses = []
+                for batch_X, batch_y in val_loader:
+                    batch_X = batch_X.to(DEVICE)
+                    batch_y = batch_y.to(DEVICE)
+                    outputs, _, _ = model(batch_X)
+                    outputs = outputs.squeeze(-1)
+                    _, mse, div = criterion(outputs, batch_y)
+                    val_mse_losses.append(mse.item())
+                    val_div_losses.append(div.item())
+
+                avg_val_mse = np.mean(val_mse_losses)
+                avg_val_div = np.mean(val_div_losses)
+
+                writer.add_scalar('Loss/mse', avg_val_mse, epoch)
+                writer.add_scalar('Loss/diversity', avg_val_div, epoch)
+
             writer.flush() # Ensures data is written immediately
 
             # Colors
@@ -680,6 +730,16 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
             else:
                 print(f"{RED}{'-' * 70}{RESET}\n")
 
+        if epoch % 5 == 0:
+            pred_std = outputs.std().item()
+            target_std = batch_y.std().item()
+
+            if pred_std < 0.0001:
+                print(f"\n{RED}WARNING: Prediction collapse detected!")
+                print(f"  Pred std: {pred_std:.6f}")
+                print(f"  Target std: {target_std:.6f}{RESET}\n")
+
+
         # Track consecutive unhealthy epochs
         if not is_healthy:
             consecutive_unhealthy_epochs += 1
@@ -706,28 +766,28 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
 
         print(f"    Optimizer:           {ep_optimizer:>6.2f}s ({ep_optimizer / total_train * 100:>5.1f}%)")
         print(f"    Other:               {ep_other:>6.2f}s ({ep_other / total_train * 100:>5.1f}%)")
-        print(f"  Validation Loop:   {val_loop_times[-1]:.3f}s")
-        print(f"  Total:             {epoch_times[epoch-1]:.3f}s | {(epoch_times[epoch-1]) / 60:.2f}m")
+        print(f"  Validation Loop:     {val_loop_times[-1]:.3f}s")
+        print(f"  Total:               {epoch_times[epoch-1]:.3f}s | {(epoch_times[epoch-1]) / 60:.2f}m")
 
         if avg_val_loss < best_val_loss:
-            print(f"{GREEN}  Loss (MSE):        {avg_train_loss:.8f} (train), {avg_val_loss:.8f} (val){RESET}")
+            print(f"{GREEN}  Loss (MSE):          {avg_train_loss:.8f} (train), {avg_val_loss:.8f} (val){RESET}")
         else:
-            print(f"  Loss (MSE):        {avg_train_loss:.8f} (train), {avg_val_loss:.8f} (val){RESET}")
+            print(f"  Loss (MSE):          {avg_train_loss:.8f} (train), {avg_val_loss:.8f} (val){RESET}")
 
         # Add return magnitude context:
-        print(f"  RMSE (return):     {np.sqrt(avg_train_loss):.4%} (train), {np.sqrt(avg_val_loss):.4%} (val)")
+        print(f"  RMSE (return):       {np.sqrt(avg_train_loss):.4%} (train), {np.sqrt(avg_val_loss):.4%} (val)")
 
-        print(f"  Direction Accuracy:{train_direction_acc:.1%} (train), {val_direction_acc:.1%} (val)")
+        print(f"  Direction Accuracy:  {train_direction_acc:.1%} (train), {val_direction_acc:.1%} (val)")
         if use_gradient_clipping:
-            print(f"  Gradient Norm:     {avg_grad_norm:.4f} (clip rate: {clip_rate:.1%})")
-        print(f"  LR:                {optimizer.param_groups[0]['lr']:.2e}")
+            print(f"  Gradient Norm:       {avg_grad_norm:.4f} (clip rate: {clip_rate:.1%})")
+        print(f"  LR:                  {optimizer.param_groups[0]['lr']:.2e}")
 
         # --------------------------
         # Early Stopping
         # --------------------------
         if avg_val_loss < best_val_loss:
             torch.save(model.state_dict(), checkpoint_path)
-            logging.info(f"{GREEN}New best model saved (val_loss: {avg_val_loss:.6f}, dir_acc: {val_direction_acc:.1%}){RESET}")
+            logging.info(f"{GREEN}New best model saved (val_loss: {avg_val_loss:.8f}, dir_acc: {val_direction_acc:.1%}){RESET}")
             best_val_loss = avg_val_loss
             epochs_without_improvement = 0
         else:
