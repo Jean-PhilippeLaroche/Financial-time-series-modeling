@@ -137,10 +137,10 @@ def main(
     raw_close_train = train_df['close'].copy()
 
     # Scale features
-    from sklearn.preprocessing import RobustScaler
-    scaler = RobustScaler()
+    from sklearn.preprocessing import RobustScaler, MinMaxScaler
+    scaler = MinMaxScaler()
     scaler.fit(train_df[feature_columns])
-    print("Scaler:                 created & fitted RobustScaler")
+    print("Scaler:                 created & fitted MinMaxScaler")
 
     train_df_scaled = train_df.copy()
     train_df_scaled[feature_columns] = scaler.transform(train_df[feature_columns])
@@ -180,7 +180,7 @@ def main(
     # Use the SAME scaler
     val_df_scaled = val_df.copy()
     val_df_scaled[feature_columns] = scaler.transform(val_df[feature_columns])
-    print("Scaler:                 using provided RobustScaler")
+    print("Scaler:                 using provided MinMaxScaler")
 
     # Create sequences with forward returns
     X_val, y_val = create_sequences_with_forward_returns(

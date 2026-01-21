@@ -7,7 +7,7 @@ import pandas as pd
 import logging
 from ta.momentum import RSIIndicator
 from ta.trend import MACD
-from sklearn.preprocessing import RobustScaler
+from sklearn.preprocessing import RobustScaler, MinMaxScaler
 import numpy as np
 import warnings
 import sqlite3
@@ -440,9 +440,9 @@ def prepare_data_for_ai(
     # 6) Scale features (BEFORE converting close to returns)
     # We scale the raw features, then sequence creation handles return conversion
     if scaler is None:
-        scaler = RobustScaler()
+        scaler = MinMaxScaler()
         scaler.fit(df[feature_columns])
-        print("Scaler:                 created & fitted RobustScaler")
+        print("Scaler:                 created & fitted MinMaxScaler.")
     else:
         print("Scaler:                 using provided")
 
@@ -484,11 +484,11 @@ def prepare_sequences_from_df(df, feature_columns, window_size=20, forward_bars=
 
     # Scale
     if scaler is None:
-        scaler = RobustScaler()
+        scaler = MinMaxScaler()
         scaler.fit(df[feature_columns])
-        print("Scaler:                 created & fitted RobustScaler")
+        print("Scaler:                 created & fitted MinMaxScaler")
     else:
-        print("Scaler:                 using provided RobustScaler")
+        print("Scaler:                 using provided MinMaxScaler")
 
     df_scaled = df.copy()
     df_scaled[feature_columns] = scaler.transform(df[feature_columns])

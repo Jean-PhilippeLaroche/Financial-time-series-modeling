@@ -54,7 +54,7 @@ Note: added automatic opening, use manual way if needed shouldn't be the case
 - python main.py --ticker MSFT --window 120 --epochs 80 --batch 256 --lr 3e-4 --d_model 256 --nhead 8 --num_layers 6 --dim_feedforward 1024 --dropout 0.1 --threshold 0.002 --transaction_cost 0.0015 --max_norm 1.0 --lr_scheduler_patience 6 --lr_scheduler_factor 0.5 --patience 20 --forward_bars 5
 
 **Smaller model for faster training:**
-- python main.py --ticker MSFT --window 60 --epochs 100 --batch 128 --lr 1e-4 --d_model 32 --nhead 4 --num_layers 2 --dim_feedforward 128 --dropout 0.1 --threshold 0.002 --transaction_cost 0.0015 --max_norm 1.0 --lr_scheduler_patience 6 --lr_scheduler_factor 0.5 --patience 20 --forward_bars 5
+- python main.py --ticker MSFT --window 60 --epochs 100 --batch 128 --lr 1e-4 --d_model 32 --nhead 4 --num_layers 2 --dim_feedforward 128 --dropout 0.1 --threshold 0.02 --transaction_cost 0.0015 --max_norm 1.0 --lr_scheduler_patience 6 --lr_scheduler_factor 0.5 --patience 20 --forward_bars 5
 
 **Visualization commands:**
 1. --no_viz: no plotting at the end
@@ -67,7 +67,7 @@ and the parameters to a .csv file from best_model.pth
 
 # Ticker choice
 - If AAPL or MSFT is selected as the ticker, the data will be automatically loaded from the
-SQLite database. A
+SQLite database.
 - MZN, BAC, CAT, JPM, KO, TSLA, WMT and XOM will be loaded from the .csv files
 
 

@@ -29,6 +29,8 @@ import time
 import platform
 import uuid
 import math
+
+from utils.prediction_visualization import start_dashboard, visualize_predictions_per_epoch
 from utils.transformer_visuals import (
     update_attention_window,
     init_attention_window,
@@ -173,33 +175,16 @@ def get_tensorboard_writer(log_dir="runs"):
 
 
 # Custom loss function
-class DiverseLoss(nn.Module):
-    """
-    Loss that combines Huber loss with a diversity penalty.
-    Huber is more robust to outliers than MSE.
-    """
-
-    def __init__(self, mse_weight=1.0, diversity_weight=1.0, huber_delta=0.01):
+class VarianceLoss(nn.Module):
+    def __init__(self):
         super().__init__()
-        self.mse_weight = mse_weight
-        self.diversity_weight = diversity_weight
-        self.huber = nn.HuberLoss(delta=huber_delta)
+        self.mse = nn.MSELoss()
 
-    def forward(self, predictions, targets):
-        # Huber loss (more robust than MSE)
-        huber_loss = self.huber(predictions, targets)
-
-        # Diversity penalty
-        pred_std = predictions.std()
-        target_std = targets.std()
-
-        # Penalize if prediction std is too small
-        diversity_loss = torch.abs(pred_std - target_std) / (target_std + 1e-8)
-
-        total_loss = (self.mse_weight * huber_loss +
-                      self.diversity_weight * diversity_loss)
-
-        return total_loss, huber_loss, diversity_loss
+    def forward(self, pred, target):
+        mse_loss = self.mse(pred, target)
+        # Penalty if predictions have no variance (all same)
+        variance_penalty = 1.0 / (pred.std() + 1e-6)
+        return mse_loss + 0.01 * variance_penalty
 
 
 # -----------------------------
@@ -285,9 +270,7 @@ class TimeSeriesTransformerPooled(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        for p in self.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
+        pass
 
     def forward(self, x):
 
@@ -379,6 +362,8 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
 
     reset_feature_tracking()
 
+    dashboard_thread = start_dashboard(port=8052, open_browser=True)
+
     set_feature_names(["close_return","RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"])
 
     # Initialize Transformer model
@@ -396,7 +381,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
 
     print(f"Initialized Transformer with {sum(p.numel() for p in model.parameters()):,} parameters")
 
-    criterion = DiverseLoss(mse_weight=1.0, diversity_weight=1.0)
+    criterion = VarianceLoss()
 
     # AdamW optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
@@ -496,13 +481,13 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
             mean_attn = [a.mean(dim=0).detach().cpu().numpy() for a in attn]
             # mean_attn becomes a list: [ (heads, seq, seq), ... per layer ]
 
-            total_loss, mse_loss, div_loss = criterion(outputs, batch_y)
+            mse_loss = criterion(outputs, batch_y)
 
             ep_forward += time.time() - fwd_start
 
             # Backward pass
             bwd_start = time.time()
-            total_loss.backward()
+            mse_loss.backward()
 
             ep_backward += time.time() - bwd_start
 
@@ -527,7 +512,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
             optimizer.step()
             optimizer.zero_grad()
 
-            train_losses.append(total_loss.item())
+            train_losses.append(mse_loss.item())
 
             ep_optimizer += time.time() - opt_start
 
@@ -570,8 +555,22 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
                 outputs, _, _ = model(batch_X)
                 outputs = outputs.squeeze(-1)
 
-                total_loss, mse_loss, div_loss = criterion(outputs, batch_y)
-                val_losses.append(total_loss.item())
+                mse_loss = criterion(outputs, batch_y)
+                val_losses.append(mse_loss.item())
+
+        # --------------------------
+        # UPDATE DASHBOARD
+        # --------------------------
+        # Update every epoch
+        if epoch % 1 == 0:
+            pred_stats = visualize_predictions_per_epoch(
+                model=model,
+                val_loader=val_loader,
+                epoch=epoch,
+                device=DEVICE,
+                scaler=None,
+                max_samples=100
+            )
 
         val_loop_times.append(time.time() - val_loop_start)
 
@@ -659,21 +658,17 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
 
             with torch.no_grad():
                 val_mse_losses = []
-                val_div_losses = []
                 for batch_X, batch_y in val_loader:
                     batch_X = batch_X.to(DEVICE)
                     batch_y = batch_y.to(DEVICE)
                     outputs, _, _ = model(batch_X)
                     outputs = outputs.squeeze(-1)
-                    _, mse, div = criterion(outputs, batch_y)
+                    mse= criterion(outputs, batch_y)
                     val_mse_losses.append(mse.item())
-                    val_div_losses.append(div.item())
 
                 avg_val_mse = np.mean(val_mse_losses)
-                avg_val_div = np.mean(val_div_losses)
 
                 writer.add_scalar('Loss/mse', avg_val_mse, epoch)
-                writer.add_scalar('Loss/diversity', avg_val_div, epoch)
 
             writer.flush() # Ensures data is written immediately
 
@@ -693,15 +688,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
                     print(f"  Avg Grad Norm:   {avg_grad_norm:.4f}")
                     print(f"  Avg Clip Value:  {avg_clip_value:.4f}")
                     print(f"  Ratio:           {avg_grad_norm / avg_clip_value:.2f}x")
-                    print(f"\n  Recommendations:")
-                    if clip_rate > 0.5:
-                        print(
-                            f"    - Increase max_norm (current: {avg_clip_value:.2f} -> try: {avg_clip_value * 1.5:.2f})")
-                        print(f"    - Or reduce learning rate")
-                    elif avg_grad_norm > avg_clip_value * 2:
-                        print(f"    - Gradients are very large relative to clip value")
-                        print(f"    - Consider reducing learning rate")
-                        print(f"{YELLOW}{'-' * 70}{RESET}\n")
+                    print(f"{YELLOW}{'-' * 70}{RESET}\n")
                 elif clip_rate > 0.0:
                     # Info message if some clipping occurred (but not too much)
                     logging.info(f"\n{GREEN}Gradient clipping: {clip_rate:.1%} of batches clipped (healthy){RESET}")
