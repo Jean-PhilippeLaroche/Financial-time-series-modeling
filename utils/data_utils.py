@@ -13,8 +13,14 @@ import warnings
 import sqlite3
 from scripts.time_feature_engineering import TimeFeatureEngineer, get_recommended_time_features
 
-warnings.filterwarnings("ignore", category=FutureWarning)
+import sys
+sys.path.insert(0, os.path.dirname(__file__))
 
+
+import data_pipeline
+
+
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 # ============================================================================
 # DATA LOADING
