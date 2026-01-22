@@ -176,15 +176,22 @@ def get_tensorboard_writer(log_dir="runs"):
 
 # Custom loss function
 class VarianceLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, variance_weight=0.1):
         super().__init__()
         self.mse = nn.MSELoss()
+        self.variance_weight = variance_weight
 
     def forward(self, pred, target):
         mse_loss = self.mse(pred, target)
-        # Penalty if predictions have no variance (all same)
-        variance_penalty = 1.0 / (pred.std() + 1e-6)
-        return mse_loss + 0.01 * variance_penalty
+
+        # Encourage predictions to have SOME variance (not collapse to mean)
+        pred_var = pred.var()
+
+        # Penalty if variance is TOO LOW (mode collapse)
+        # Using negative exponential: high penalty when var→0, low penalty when var is good
+        variance_penalty = torch.exp(-pred_var / 0.001)  # 0.001 ≈ target variance
+
+        return mse_loss + self.variance_weight * variance_penalty
 
 
 # -----------------------------
@@ -334,7 +341,7 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
                 epochs=20, batch_size=64, lr=1e-4, writer=None, scaler=None,
                 early_stopping_patience=20, lr_scheduler_patience=5, lr_scheduler_factor=0.5,
                 d_model=128, nhead=8, num_layers=3, dim_feedforward=512, dropout=0.1,
-                max_norm=1.0, use_gradient_clipping=True
+                max_norm=1.0, use_gradient_clipping=True, feature_columns=None
                 ):
     """
     Train the Transformer model.
@@ -364,7 +371,11 @@ def train_model(X_train, y_train, X_val, y_val, input_size,
 
     dashboard_thread = start_dashboard(port=8052, open_browser=True)
 
-    set_feature_names(["close_return","RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"])
+    if feature_columns:
+        set_feature_names(feature_columns)
+
+    else:
+        set_feature_names(["close_return","RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"])
 
     # Initialize Transformer model
     model = TimeSeriesTransformerPooled(

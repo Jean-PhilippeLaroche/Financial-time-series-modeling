@@ -8,8 +8,9 @@ from utils.data_utils import (
     create_sequences_with_forward_returns,
     load_stock_csv,
     add_indicators,
-    clean_data, load_stock_sqlite
+    clean_data, load_stock_sqlite, add_time_features
 )
+from scripts.time_feature_engineering import get_recommended_time_features
 from utils.plot_utils import visualize_model_performance
 from scripts.train import train_model, get_tensorboard_writer, launch_tensorboard, DEVICE
 from scripts.backtest import run_backtest
@@ -109,7 +110,8 @@ def main(
 
     df_filtered = filter_regular_hours_only(df_raw)
     df_with_indicators = add_indicators(df_filtered)
-    df_clean = clean_data(df_with_indicators)
+    df_with_time = add_time_features(df_with_indicators, minimal=True)
+    df_clean = clean_data(df_with_time)
 
     n_total = len(df_clean)
     split_idx = int(n_total * train_size)
@@ -131,7 +133,15 @@ def main(
 
     # Select features - "close" will be converted to "close_return" automatically
     feature_columns = ["close", "RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"]
+
+    time_feature_names = get_recommended_time_features(use_case='minimal')  # or 'standard', 'comprehensive'
+    feature_columns.extend(time_feature_names)
+
+    # Filter to only columns that actually exist
     feature_columns = [c for c in feature_columns if c in train_df.columns]
+
+    print(f"Feature columns:        {len(feature_columns)} total "
+          f"(6 technical + {len(time_feature_names)} time)")
 
     # Save raw close BEFORE scaling
     raw_close_train = train_df['close'].copy()
@@ -263,7 +273,8 @@ def main(
         lr_scheduler_patience=lr_scheduler_patience,
         lr_scheduler_factor=lr_scheduler_factor,
         max_norm=max_norm,
-        use_gradient_clipping=use_gradient_clipping
+        use_gradient_clipping=use_gradient_clipping,
+        feature_columns=feature_columns
     )
 
     if model is None:
@@ -306,7 +317,12 @@ def main(
     df_clean = filter_regular_hours_only(df_clean)
 
     feature_columns = ["close", "RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"]
-    feature_columns = [c for c in feature_columns if c in df_clean.columns]
+
+    time_feature_names = get_recommended_time_features(use_case='minimal')  # or 'standard', 'comprehensive'
+    feature_columns.extend(time_feature_names)
+
+    # Filter to only columns that actually exist
+    feature_columns = [c for c in feature_columns if c in train_df.columns]
     print(f"Using feature columns:  {feature_columns}")
 
     val_start_idx = split_idx + window_size

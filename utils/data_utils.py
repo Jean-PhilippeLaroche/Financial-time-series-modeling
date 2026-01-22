@@ -1,5 +1,5 @@
 """
-data_utils.py - 5-minute forward return prediction
+data_utils.py - 5-minute forward return prediction with time features
 """
 
 import os
@@ -11,6 +11,7 @@ from sklearn.preprocessing import RobustScaler, MinMaxScaler
 import numpy as np
 import warnings
 import sqlite3
+from scripts.time_feature_engineering import TimeFeatureEngineer, get_recommended_time_features
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -267,6 +268,53 @@ def add_indicators(df, rsi_period=14, macd_fast=12, macd_slow=26,
     return df
 
 
+def add_time_features(df, minimal=True, market_open='09:30', market_close='16:00'):
+    """
+    Add time-based features for return prediction.
+
+    Args:
+        df: DataFrame with datetime index
+        minimal: If True, add only essential time features (7 features)
+                 If False, add comprehensive time features (25 features)
+        market_open: Market opening time (HH:MM format)
+        market_close: Market closing time (HH:MM format)
+
+    Returns:
+        DataFrame with added time features
+    """
+    df = df.copy()
+
+    # Initialize time feature engineer
+    engineer = TimeFeatureEngineer(
+        market_open=market_open,
+        market_close=market_close,
+        use_cyclic=True
+    )
+
+    # Add time features
+    # The engineer expects a 'timestamp' column, but our df has timestamp as index
+    df_temp = df.reset_index()
+    df_temp = df_temp.rename(columns={df_temp.columns[0]: 'timestamp'})
+
+    # Add features
+    df_with_time = engineer.add_all_time_features(
+        df_temp,
+        timestamp_col='timestamp',
+        minimal=minimal
+    )
+
+    # Set timestamp back as index
+    df_with_time = df_with_time.set_index('timestamp')
+
+    # Get feature names for logging
+    time_feature_names = engineer.get_feature_names(minimal=minimal)
+
+    print(f"Time features added:    {len(time_feature_names)} features "
+          f"({'minimal' if minimal else 'comprehensive'} set)")
+
+    return df_with_time
+
+
 def clean_data(df):
     """
     Clean the stock data DataFrame by handling missing values and ensuring numeric types.
@@ -295,7 +343,6 @@ def create_sequences_with_forward_returns(df, feature_columns, target_column="cl
                                           window_size=20, forward_bars=5, raw_close=None):
     """
     Convert DataFrame into sequences for AI training, predicting forward returns.
-
 
     Args:
         df: DataFrame with scaled features
@@ -381,7 +428,9 @@ def prepare_data_for_ai(
         atr_period=14,
         start_idx=None,
         end_idx=None,
-        scaler=None
+        scaler=None,
+        add_time_features_flag=True,
+        time_features_minimal=True
 ):
     """
     Full pipeline to prepare stock data for AI training with forward return prediction.
@@ -390,6 +439,9 @@ def prepare_data_for_ai(
 
     Args:
         forward_bars: Number of bars ahead to predict (e.g., 5 = predict 5-minute return)
+        add_time_features_flag: Whether to add time features (default: True)
+        time_features_minimal: If True, add minimal time features (7 features)
+                               If False, add comprehensive time features (25 features)
 
     Returns:
         X: Input sequences
@@ -424,20 +476,33 @@ def prepare_data_for_ai(
         price_column=target_column
     )
 
+    # 4) Add time features (NEW)
+    if add_time_features_flag:
+        whole_df = add_time_features(whole_df, minimal=time_features_minimal)
+
     whole_df = clean_data(whole_df)
 
-    # 4) Slice if needed
+    # 5) Slice if needed
     s = start_idx if start_idx is not None else 0
     e = end_idx if end_idx is not None else len(whole_df)
     df = whole_df.iloc[s:e].copy()
 
-    # 5) Select features
+    # 6) Select features
     if feature_columns is None:
-        # NOTE: 'close' will be converted to 'close_return' automatically in sequence creation
+        # Default feature columns
         feature_columns = ["close", "RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"]
+
+        # Add time features if they were added
+        if add_time_features_flag:
+            time_feature_names = get_recommended_time_features(
+                use_case='minimal' if time_features_minimal else 'standard'
+            )
+            feature_columns.extend(time_feature_names)
+
+        # Filter to only columns that exist
         feature_columns = [c for c in feature_columns if c in df.columns]
 
-    # 6) Scale features (BEFORE converting close to returns)
+    # 7) Scale features (BEFORE converting close to returns)
     # We scale the raw features, then sequence creation handles return conversion
     if scaler is None:
         scaler = MinMaxScaler()
@@ -449,13 +514,17 @@ def prepare_data_for_ai(
     df_scaled = df.copy()
     df_scaled[feature_columns] = scaler.transform(df[feature_columns])
 
-    # 7) Create sequences with forward returns
+    # 8) Create sequences with forward returns
+    # Need to pass raw close for return calculation
+    raw_close = df[target_column].copy()
+
     X, y = create_sequences_with_forward_returns(
         df_scaled,
         feature_columns,
         target_column=target_column,
         window_size=window_size,
-        forward_bars=forward_bars
+        forward_bars=forward_bars,
+        raw_close=raw_close
     )
 
     print(f"Sequences prepared:     {X.shape[0]:,} sequences")
@@ -505,7 +574,7 @@ def prepare_sequences_from_df(df, feature_columns, window_size=20, forward_bars=
 
     print(f"Sequences:              {X.shape[0]:,} samples")
     print(f"Target:                 {forward_bars}-bar forward returns")
-    print(f"Return stats:           mean={y.mean():.6f}, std={y.std():.6f}, min={y.min():.6f}, max={y.max():.6f}")
+    print(f"Return stats:           mean={y.mean():.6f}, std={y.std():.6f}")
 
     return X, y, scaler
 
@@ -520,20 +589,18 @@ if __name__ == "__main__":
 
     ticker = "MSFT"
 
-    # Test forward returns
-    print("\n[TEST] Testing forward returns functionality...")
-
+    # Test 1: Basic functionality (without time features)
+    print("\n[TEST 1] Testing basic forward returns functionality...")
     df = load_stock_sqlite(ticker)
     df = filter_regular_hours_only(df)
     df = add_indicators(df)
     df = clean_data(df)
 
-    # Test with different forward horizons
     for forward_bars in [1, 5, 10]:
-        print(f"\n--- Testing {forward_bars}-bar forward returns ---")
+        print(f"\n--- Testing {forward_bars}-bar forward returns (no time features) ---")
 
         X, y, scaler = prepare_sequences_from_df(
-            df.iloc[:10000],  # Use subset for testing
+            df.iloc[:10000],
             feature_columns=["close", "RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"],
             window_size=20,
             forward_bars=forward_bars,
@@ -548,6 +615,77 @@ if __name__ == "__main__":
         assert abs(y.mean()) < 0.01, f"Return mean suspiciously high: {y.mean():.6f}"
 
         print(f"{forward_bars}-bar forward returns passed")
+
+    # Test 2: With time features (minimal)
+    print("\n[TEST 2] Testing with minimal time features...")
+    df = load_stock_sqlite(ticker)
+    df = filter_regular_hours_only(df)
+    df = add_indicators(df)
+    df = add_time_features(df, minimal=True)
+    df = clean_data(df)
+
+    engineer = TimeFeatureEngineer()
+    time_feature_names = engineer.get_feature_names(minimal=True)
+
+    feature_cols = ["close", "RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"]
+    feature_cols.extend(time_feature_names)
+
+    X, y, scaler = prepare_sequences_from_df(
+        df.iloc[:10000],
+        feature_columns=feature_cols,
+        window_size=20,
+        forward_bars=5,
+        scaler=None
+    )
+
+    print(f"Feature count:          {X.shape[2]} features (6 technical + {len(time_feature_names)} time)")
+    print(f"Expected features:      {len(feature_cols)}")
+    assert X.shape[2] == len(
+        time_feature_names) + 6, f"Feature count mismatch: {X.shape[2]} vs {len(time_feature_names) + 6}"
+    assert not np.isnan(X).any(), "X contains NaN with time features"
+    print("Minimal time features test passed")
+
+    # Test 3: With comprehensive time features
+    print("\n[TEST 3] Testing with comprehensive time features...")
+    df = load_stock_sqlite(ticker)
+    df = filter_regular_hours_only(df)
+    df = add_indicators(df)
+    df = add_time_features(df, minimal=False)
+    df = clean_data(df)
+
+    time_feature_names_full = engineer.get_feature_names(minimal=False)
+    feature_cols_full = ["close", "RSI", "MACD_Histogram", "SMA_Deviation", "ATR", "Volume_Ratio"]
+    feature_cols_full.extend(time_feature_names_full)
+
+    X, y, scaler = prepare_sequences_from_df(
+        df.iloc[:10000],
+        feature_columns=feature_cols_full,
+        window_size=20,
+        forward_bars=5,
+        scaler=None
+    )
+
+    print(f"Feature count:          {X.shape[2]} features (6 technical + {len(time_feature_names_full)} time)")
+    assert X.shape[2] == len(time_feature_names_full) + 6, "Full feature count mismatch"
+    assert not np.isnan(X).any(), "X contains NaN with full time features"
+    print("Comprehensive time features test passed")
+
+    # Test 4: Test prepare_data_for_ai with time features
+    print("\n[TEST 4] Testing prepare_data_for_ai() with time features...")
+    X, y, scaler = prepare_data_for_ai(
+        ticker="MSFT",
+        SQLite=True,
+        window_size=20,
+        forward_bars=5,
+        start_idx=0,
+        end_idx=10000,
+        add_time_features_flag=True,
+        time_features_minimal=True
+    )
+
+    assert X is not None, "prepare_data_for_ai returned None"
+    assert X.shape[2] > 6, "Time features not added in prepare_data_for_ai"
+    print(f"prepare_data_for_ai() with time features passed ({X.shape[2]} features)")
 
     print("\n" + "=" * 70)
     print("ALL TESTS PASSED")
